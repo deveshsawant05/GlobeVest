@@ -80,8 +80,8 @@ export default function RegisterPage() {
 
   return (
     <div className="flex min-h-screen flex-col">
-      <header className="border-b">
-        <div className="container flex h-16 items-center justify-between py-4">
+      <header className="border-b px-6">
+        <div className="flex h-16 items-center justify-between py-4">
           <Link href="/">
             <Logo />
           </Link>

@@ -15,7 +15,7 @@ export function DashboardLayout({ children }) {
   return (
     <div className="flex min-h-screen flex-col">
       <header className="sticky top-0 z-40 border-b bg-background">
-        <div className="container flex h-16 items-center justify-between py-4">
+        <div className="flex h-16 items-center justify-between py-4 px-6">
           <div className="flex items-center gap-4 md:gap-8">
             <Sheet open={open} onOpenChange={setOpen}>
               <SheetTrigger asChild>

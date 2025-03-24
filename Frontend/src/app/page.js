@@ -7,7 +7,7 @@ import { ArrowRight, BarChart3, Globe, Shield, Wallet } from "lucide-react";
 export default function Home() {
   return (
     <div className="flex min-h-screen flex-col w-full">
-      <header className="w-full">
+      <header className="border-b w-full">
         <div className=" flex h-16 items-center justify-between px-4 py-4 w-full">
           <Logo />
           <div className="flex items-center gap-4">

@@ -6,9 +6,9 @@ import { ArrowRight, BarChart3, Globe, Shield, Wallet } from "lucide-react";
 
 export default function Home() {
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="border-b">
-        <div className="container flex h-16 items-center justify-between py-4">
+    <div className="flex min-h-screen flex-col w-full">
+      <header className="w-full">
+        <div className=" flex h-16 items-center justify-between px-4 py-4 w-full">
           <Logo />
           <div className="flex items-center gap-4">
             <ThemeToggle />
@@ -22,8 +22,8 @@ export default function Home() {
         </div>
       </header>
       <main className="flex-1">
-        <section className="w-full py-12 md:py-24 lg:py-32">
-          <div className="container px-4 md:px-6">
+        <section className="w-full py-12 md:py-24 lg:py-32 px-4 md:px-6">
+          <div className="px-4 md:px-6">
             <div className="grid gap-6 lg:grid-cols-2 lg:gap-12">
               <div className="flex flex-col justify-center space-y-4">
                 <div className="space-y-2">
@@ -61,7 +61,7 @@ export default function Home() {
           </div>
         </section>
         <section className="w-full py-12 md:py-24 lg:py-32 bg-muted">
-          <div className="container px-4 md:px-6">
+          <div className="md:px-6">
             <div className="flex flex-col items-center justify-center space-y-4 text-center">
               <div className="space-y-2">
                 <h2 className="text-3xl font-bold tracking-tighter sm:text-4xl md:text-5xl">
@@ -113,8 +113,8 @@ export default function Home() {
           </div>
         </section>
       </main>
-      <footer className="border-t py-6 md:py-0">
-        <div className="container flex flex-col items-center justify-between gap-4 md:h-24 md:flex-row">
+      <footer className="border-t py-6 md:py-0 px-6">
+        <div className="flex flex-col items-center justify-between gap-4 md:h-24 md:flex-row x-auto">
           <p className="text-center text-sm leading-loose text-muted-foreground md:text-left">
             © 2025 GlobeVest. All rights reserved.
           </p>

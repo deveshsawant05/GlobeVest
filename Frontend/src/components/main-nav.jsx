@@ -10,6 +10,7 @@ import {
   LineChart,
   Settings,
   Wallet,
+  PieChart,
 } from "lucide-react";
 
 const items = [
@@ -27,6 +28,11 @@ const items = [
     title: "Markets",
     href: "/markets",
     icon: LineChart,
+  },
+  {
+    title: "Portfolio",
+    href: "/portfolio",
+    icon: PieChart,
   },
   {
     title: "Transactions",

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,62 +10,75 @@ import { Logo } from "@/components/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useToast } from "@/hooks/use-toast";
 import { z } from "zod";
+import { useAuth } from "@/contexts/AuthContext";
 
 const loginSchema = z.object({
   email: z.string().email({ message: "Please enter a valid email address" }),
-  password: z.string().min(8, { message: "Password must be at least 8 characters" }),
+  password: z.string().min(6, { message: "Password must be at least 6 characters" }),
 });
 
 export default function LoginPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { toast } = useToast();
+  const { login, loading, error, isAuthenticated } = useAuth();
   const [formData, setFormData] = useState({
     email: "",
     password: "",
   });
-  const [errors, setErrors] = useState({});
-  const [isLoading, setIsLoading] = useState(false);
+  const [validationErrors, setValidationErrors] = useState({});
+
+  useEffect(() => {
+    // If user is already authenticated, redirect to dashboard
+    if (isAuthenticated) {
+      router.push("/dashboard");
+    }
+    
+    // Check if user just registered
+    const registered = searchParams.get("registered");
+    if (registered) {
+      toast({
+        title: "Registration successful",
+        description: "You can now log in with your credentials",
+      });
+    }
+  }, [isAuthenticated, router, searchParams, toast]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
-    if (errors[name]) {
-      setErrors((prev) => ({ ...prev, [name]: "" }));
+    if (validationErrors[name]) {
+      setValidationErrors((prev) => ({ ...prev, [name]: "" }));
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setIsLoading(true);
     
     try {
+      // Validate form data
       loginSchema.parse(formData);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
       
-      toast({
-        title: "Login successful",
-        description: "Redirecting to dashboard...",
-      });
+      // Attempt to login
+      await login(formData);
       
-      router.push("/dashboard");
-    } catch (error) {
-      if (error instanceof z.ZodError) {
+      // Success is handled by the auth context which redirects to dashboard
+    } catch (err) {
+      if (err instanceof z.ZodError) {
         const fieldErrors = {};
-        error.errors.forEach((err) => {
-          if (err.path[0]) {
-            fieldErrors[err.path[0]] = err.message;
+        err.errors.forEach((error) => {
+          if (error.path[0]) {
+            fieldErrors[error.path[0]] = error.message;
           }
         });
-        setErrors(fieldErrors);
+        setValidationErrors(fieldErrors);
       } else {
         toast({
           variant: "destructive",
           title: "Login failed",
-          description: "Please check your credentials and try again.",
+          description: error || "Please check your credentials and try again.",
         });
       }
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -100,8 +113,8 @@ export default function LoginPage() {
                   onChange={handleChange}
                   required
                 />
-                {errors.email && (
-                  <p className="text-sm text-destructive">{errors.email}</p>
+                {validationErrors.email && (
+                  <p className="text-sm text-destructive">{validationErrors.email}</p>
                 )}
               </div>
               <div className="space-y-2">
@@ -123,12 +136,12 @@ export default function LoginPage() {
                   onChange={handleChange}
                   required
                 />
-                {errors.password && (
-                  <p className="text-sm text-destructive">{errors.password}</p>
+                {validationErrors.password && (
+                  <p className="text-sm text-destructive">{validationErrors.password}</p>
                 )}
               </div>
-              <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading ? "Signing in..." : "Sign in"}
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? "Signing in..." : "Sign in"}
               </Button>
             </form>
             <div className="text-center text-sm">

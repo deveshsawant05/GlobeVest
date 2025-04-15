@@ -12,12 +12,20 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
 
-export function UserNav({ user }) {
+export function UserNav() {
   const router = useRouter();
+  const { user, logout } = useAuth();
   
-  const handleLogout = () => {
-    router.push("/auth/login");
+  const handleLogout = async () => {
+    await logout();
+  };
+
+  // Get initials for avatar fallback
+  const getInitials = (name) => {
+    if (!name) return "U";
+    return name.split(" ").map(n => n[0]).join("").toUpperCase();
   };
 
   return (
@@ -26,16 +34,16 @@ export function UserNav({ user }) {
         <Button variant="ghost" className="relative h-8 w-8 rounded-full">
           <Avatar className="h-8 w-8">
             <AvatarImage src="/avatars/01.png" alt={user?.name || "User"} />
-            <AvatarFallback>{user?.name ? user.name.charAt(0) : "U"}</AvatarFallback>
+            <AvatarFallback>{getInitials(user?.name)}</AvatarFallback>
           </Avatar>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56" align="end" forceMount>
         <DropdownMenuLabel className="font-normal">
           <div className="flex flex-col space-y-1">
-            <p className="text-sm font-medium leading-none">{user?.name || "John Doe"}</p>
+            <p className="text-sm font-medium leading-none">{user?.name || "Guest"}</p>
             <p className="text-xs leading-none text-muted-foreground">
-              {user?.email || "john@example.com"}
+              {user?.email || "Not signed in"}
             </p>
           </div>
         </DropdownMenuLabel>
@@ -44,8 +52,8 @@ export function UserNav({ user }) {
           <DropdownMenuItem onClick={() => router.push("/profile")}>
             Profile
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => router.push("/settings")}>
-            Settings
+          <DropdownMenuItem onClick={() => router.push("/wallets")}>
+            Wallets
           </DropdownMenuItem>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />

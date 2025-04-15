@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS tokens (
     token TEXT UNIQUE NOT NULL,
     type VARCHAR(10) NOT NULL CHECK (type IN ('access', 'refresh')),
     created_at TIMESTAMP DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
@@ -25,6 +26,7 @@ CREATE TABLE IF NOT EXISTS wallets (
     user_id UUID NOT NULL,
     currency_code CHAR(3) NOT NULL,  -- ISO 4217 currency code (e.g., USD, EUR)
     balance DECIMAL(18, 4) NOT NULL DEFAULT 0.0000,
+    is_master BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT NOW(),
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     UNIQUE (user_id, currency_code)  -- Ensures one wallet per currency per user
@@ -68,3 +70,26 @@ CREATE TABLE IF NOT EXISTS trades (
     FOREIGN KEY (wallet_id) REFERENCES wallets(wallet_id) ON DELETE CASCADE,
     FOREIGN KEY (stock_id) REFERENCES stocks(stock_id) ON DELETE CASCADE
 );
+
+-- Exchange Rates: Stores currency conversion rates
+CREATE TABLE IF NOT EXISTS exchange_rates (
+    rate_id SERIAL PRIMARY KEY,
+    from_currency CHAR(3) NOT NULL,  -- Source currency code
+    to_currency CHAR(3) NOT NULL,    -- Target currency code
+    rate DECIMAL(18, 6) NOT NULL,    -- Conversion rate from source to target
+    updated_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE (from_currency, to_currency)
+);
+
+-- Insert some initial exchange rates for common currencies
+INSERT INTO exchange_rates (from_currency, to_currency, rate) 
+VALUES
+    ('USD', 'EUR', 0.85),
+    ('USD', 'GBP', 0.75),
+    ('USD', 'JPY', 120.0),
+    ('USD', 'INR', 75.0),
+    ('EUR', 'USD', 1.18),
+    ('GBP', 'USD', 1.33),
+    ('JPY', 'USD', 0.0083),
+    ('INR', 'USD', 0.013)
+ON CONFLICT (from_currency, to_currency) DO NOTHING;

@@ -1,456 +1,740 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { DashboardLayout } from "@/components/dashboard-layout";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { formatCurrency, wallets, exchangeRates } from "@/lib/data";
-import { ArrowDownUp, ArrowRight, Plus, Wallet as WalletIcon } from "lucide-react";
-import { useState } from "react";
 import { useToast } from "@/hooks/use-toast";
+import { ArrowLeftRight, Plus, Wallet } from "lucide-react";
+import { WalletAPI } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
+// Main wallet component
 export default function WalletsPage() {
   const { toast } = useToast();
-  const [depositAmount, setDepositAmount] = useState("");
-  const [depositCurrency, setDepositCurrency] = useState("USD");
-  const [withdrawAmount, setWithdrawAmount] = useState("");
-  const [withdrawCurrency, setWithdrawCurrency] = useState("USD");
-  const [convertFromCurrency, setConvertFromCurrency] = useState("USD");
-  const [convertToCurrency, setConvertToCurrency] = useState("EUR");
-  const [convertAmount, setConvertAmount] = useState("");
-  const [convertedAmount, setConvertedAmount] = useState(null);
+  const { user } = useAuth();
+  const [wallets, setWallets] = useState([]);
+  const [masterWallet, setMasterWallet] = useState(null);
+  const [foreignWallets, setForeignWallets] = useState([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  const handleDeposit = () => {
-    if (!depositAmount || isNaN(Number(depositAmount)) || Number(depositAmount) <= 0) {
-      toast({
-        variant: "destructive",
-        title: "Invalid amount",
-        description: "Please enter a valid deposit amount.",
-      });
-      return;
-    }
+  // Fetch wallets data
+  useEffect(() => {
+    const fetchWallets = async () => {
+      try {
+        setIsLoading(true);
+        
+        // First, fetch all user wallets
+        const allWalletsResponse = await WalletAPI.getUserWallets();
+        if (!allWalletsResponse.data || allWalletsResponse.data.length === 0) {
+          setWallets([]);
+          setMasterWallet(null);
+          setForeignWallets([]);
+          return;
+        }
+        
+        setWallets(allWalletsResponse.data);
+        
+        // Find the master wallet from the fetched wallets using is_master property
+        const masterWalletFound = allWalletsResponse.data.find(wallet => wallet.is_master === true);
+        
+        if (masterWalletFound) {
+          setMasterWallet(masterWalletFound);
+          
+          // Set foreign wallets (all non-master wallets)
+          const foreignWalletsFound = allWalletsResponse.data.filter(wallet => wallet.is_master !== true);
+          setForeignWallets(foreignWalletsFound);
+        } else {
+          // If no wallet is marked as master (shouldn't happen), try to fetch master wallet directly
+          try {
+            // Get the first wallet's currency as fallback
+            const fallbackCurrency = allWalletsResponse.data[0].currency_code;
+            const masterResponse = await WalletAPI.getMasterWallet(fallbackCurrency);
+            
+            if (masterResponse.data) {
+              setMasterWallet(masterResponse.data);
+              // Fetch foreign wallets using the master wallet's currency
+              const foreignResponse = await WalletAPI.getForeignWallets(masterResponse.data.currency_code);
+              setForeignWallets(foreignResponse.data);
+            }
+          } catch (masterError) {
+            console.error("Error fetching master wallet:", masterError);
+            toast({
+              variant: "destructive",
+              title: "Error",
+              description: "Failed to determine master wallet",
+            });
+          }
+        }
+      } catch (error) {
+        console.error("Error fetching wallets:", error);
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: "Failed to load wallets data",
+        });
+      } finally {
+        setIsLoading(false);
+      }
+    };
 
-    toast({
-      title: "Deposit successful",
-      description: `${formatCurrency(Number(depositAmount), depositCurrency)} has been added to your ${depositCurrency} wallet.`,
-    });
-    
-    setDepositAmount("");
+    fetchWallets();
+  }, [toast, refreshTrigger]);
+
+  // Format currency
+  const formatCurrency = (amount, currency) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency || 'USD',
+    }).format(amount);
   };
 
-  const handleWithdraw = () => {
-    if (!withdrawAmount || isNaN(Number(withdrawAmount)) || Number(withdrawAmount) <= 0) {
-      toast({
-        variant: "destructive",
-        title: "Invalid amount",
-        description: "Please enter a valid withdrawal amount.",
-      });
-      return;
-    }
-
-    const wallet = wallets.find(w => w.currency === withdrawCurrency);
-    if (!wallet || wallet.balance < Number(withdrawAmount)) {
-      toast({
-        variant: "destructive",
-        title: "Insufficient funds",
-        description: `You don't have enough ${withdrawCurrency} in your wallet.`,
-      });
-      return;
-    }
-
-    toast({
-      title: "Withdrawal initiated",
-      description: `${formatCurrency(Number(withdrawAmount), withdrawCurrency)} will be sent to your bank account.`,
-    });
-    
-    setWithdrawAmount("");
-  };
-
-  const calculateConversion = () => {
-    if (!convertAmount || isNaN(Number(convertAmount)) || Number(convertAmount) <= 0) {
-      toast({
-        variant: "destructive",
-        title: "Invalid amount",
-        description: "Please enter a valid amount to convert.",
-      });
-      return;
-    }
-
-    const wallet = wallets.find(w => w.currency === convertFromCurrency);
-    if (!wallet || wallet.balance < Number(convertAmount)) {
-      toast({
-        variant: "destructive",
-        title: "Insufficient funds",
-        description: `You don't have enough ${convertFromCurrency} in your wallet.`,
-      });
-      return;
-    }
-
-    const rate = exchangeRates[convertFromCurrency][convertToCurrency];
-    const result = Number(convertAmount) * rate;
-    setConvertedAmount(result);
-  };
-
-  const handleConvert = () => {
-    if (convertedAmount === null) {
-      return;
-    }
-
-    toast({
-      title: "Conversion successful",
-      description: `${formatCurrency(Number(convertAmount), convertFromCurrency)} has been converted to ${formatCurrency(convertedAmount, convertToCurrency)}.`,
-    });
-    
-    setConvertAmount("");
-    setConvertedAmount(null);
+  // Trigger refresh after operations
+  const refreshWallets = () => {
+    setRefreshTrigger(prev => prev + 1);
   };
 
   return (
     <DashboardLayout>
       <div className="flex flex-col gap-4">
-        <h1 className="text-3xl font-bold tracking-tight">Wallets</h1>
-        <p className="text-muted-foreground">
-          Manage your multi-currency wallets, make deposits, withdrawals, and conversions.
-        </p>
-        
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {wallets.map((wallet) => (
-            <Card key={wallet.id}>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-xl font-bold">
-                  {wallet.currency} Wallet
-                </CardTitle>
-                <WalletIcon className="h-5 w-5 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-3xl font-bold">
-                  {formatCurrency(wallet.balance, wallet.currency)}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Last updated: {new Date(wallet.lastUpdated).toLocaleString()}
-                </p>
-              </CardContent>
-              <CardFooter className="flex justify-between">
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <Button variant="outline" size="sm">Deposit</Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Deposit to {wallet.currency} Wallet</DialogTitle>
-                      <DialogDescription>
-                        Add funds to your {wallet.currency} wallet from your bank account.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                      <div className="grid gap-2">
-                        <Label htmlFor="deposit-amount">Amount</Label>
-                        <Input
-                          id="deposit-amount"
-                          type="number"
-                          placeholder="Enter amount"
-                          value={depositAmount}
-                          onChange={(e) => setDepositAmount(e.target.value)}
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor="deposit-method">Payment Method</Label>
-                        <Select defaultValue="bank">
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select payment method" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="bank">Bank Transfer</SelectItem>
-                            <SelectItem value="card">Credit/Debit Card</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <Button onClick={handleDeposit}>Deposit Funds</Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-                <Dialog>
-                  <DialogTrigger asChild>
-                    <Button variant="outline" size="sm">Withdraw</Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Withdraw from {wallet.currency} Wallet</DialogTitle>
-                      <DialogDescription>
-                        Withdraw funds from your {wallet.currency} wallet to your bank account.
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="grid gap-4 py-4">
-                      <div className="grid gap-2">
-                        <Label htmlFor="withdraw-amount">Amount</Label>
-                        <Input
-                          id="withdraw-amount"
-                          type="number"
-                          placeholder="Enter amount"
-                          value={withdrawAmount}
-                          onChange={(e) => setWithdrawAmount(e.target.value)}
-                        />
-                      </div>
-                      <div className="grid gap-2">
-                        <Label htmlFor="withdraw-destination">Destination</Label>
-                        <Select defaultValue="bank">
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select destination" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="bank">Bank Account</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <Button onClick={handleWithdraw}>Withdraw Funds</Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
-              </CardFooter>
-            </Card>
-          ))}
-          
-          <Card className="flex flex-col items-center justify-center p-6">
-            <Plus className="h-10 w-10 text-muted-foreground mb-4" />
-            <h3 className="text-xl font-bold mb-2">Add New Wallet</h3>
-            <p className="text-center text-muted-foreground mb-4">
-              Create a new currency wallet to diversify your portfolio
-            </p>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              Create Wallet
-            </Button>
-          </Card>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <h1 className="text-3xl font-bold tracking-tight">Wallets</h1>
+          <div className="flex gap-2">
+            <AddWalletDialog onSuccess={refreshWallets} existingWallets={wallets} />
+            <ExchangeDialog 
+              masterWallet={masterWallet}
+              foreignWallets={foreignWallets}
+              onSuccess={refreshWallets}
+            />
+          </div>
         </div>
         
-        <div className="mt-8">
-          <h2 className="text-2xl font-bold mb-4">Currency Operations</h2>
+        <Tabs defaultValue="all" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="all">All Wallets</TabsTrigger>
+            <TabsTrigger value="master">Master Wallet</TabsTrigger>
+            <TabsTrigger value="foreign">Foreign Wallets</TabsTrigger>
+          </TabsList>
           
-          <Tabs defaultValue="deposit" className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
-              <TabsTrigger value="deposit">Deposit</TabsTrigger>
-              <TabsTrigger value="withdraw">Withdraw</TabsTrigger>
-              <TabsTrigger value="convert">Convert</TabsTrigger>
-            </TabsList>
-            <TabsContent value="deposit" className="mt-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Deposit Funds</CardTitle>
-                  <CardDescription>
-                    Add money to your GlobeVest wallets from external sources.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="deposit-currency">Select Wallet</Label>
-                    <Select 
-                      value={depositCurrency} 
-                      onValueChange={(value) => setDepositCurrency(value)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select currency" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {wallets.map((wallet) => (
-                          <SelectItem key={wallet.id} value={wallet.currency}>
-                            {wallet.currency} Wallet
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="deposit-amount-main">Amount</Label>
-                    <Input
-                      id="deposit-amount-main"
-                      type="number"
-                      placeholder="Enter amount"
-                      value={depositAmount}
-                      onChange={(e) => setDepositAmount(e.target.value)}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="deposit-method-main">Payment Method</Label>
-                    <Select defaultValue="bank">
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select payment method" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="bank">Bank Transfer</SelectItem>
-                        <SelectItem value="card">Credit/Debit Card</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </CardContent>
-                <CardFooter>
-                  <Button onClick={handleDeposit} className="w-full">Deposit Funds</Button>
-                </CardFooter>
-              </Card>
-            </TabsContent>
-            <TabsContent value="withdraw" className="mt-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Withdraw Funds</CardTitle>
-                  <CardDescription>
-                    Transfer money from your GlobeVest wallets to your bank account.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="withdraw-currency">Select Wallet</Label>
-                    <Select 
-                      value={withdrawCurrency} 
-                      onValueChange={(value) => setWithdrawCurrency(value)}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select currency" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {wallets.map((wallet) => (
-                          <SelectItem key={wallet.id} value={wallet.currency}>
-                            {wallet.currency} Wallet ({formatCurrency(wallet.balance, wallet.currency)})
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="withdraw-amount-main">Amount</Label>
-                    <Input
-                      id="withdraw-amount-main"
-                      type="number"
-                      placeholder="Enter amount"
-                      value={withdrawAmount}
-                      onChange={(e) => setWithdrawAmount(e.target.value)}
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="withdraw-destination-main">Destination</Label>
-                    <Select defaultValue="bank">
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select destination" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="bank">Bank Account</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </CardContent>
-                <CardFooter>
-                  <Button onClick={handleWithdraw} className="w-full">Withdraw Funds</Button>
-                </CardFooter>
-              </Card>
-            </TabsContent>
-            <TabsContent value="convert" className="mt-4">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Convert Currency</CardTitle>
-                  <CardDescription>
-                    Exchange funds between your different currency wallets.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid grid-cols-5 gap-4 items-end">
-                    <div className="col-span-2 space-y-2">
-                      <Label htmlFor="convert-from">From</Label>
-                      <Select 
-                        value={convertFromCurrency} 
-                        onValueChange={(value) => setConvertFromCurrency(value)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select currency" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {wallets.map((wallet) => (
-                            <SelectItem key={wallet.id} value={wallet.currency}>
-                              {wallet.currency} ({formatCurrency(wallet.balance, wallet.currency)})
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="flex justify-center items-center">
-                      <ArrowRight className="h-5 w-5" />
-                    </div>
-                    <div className="col-span-2 space-y-2">
-                      <Label htmlFor="convert-to">To</Label>
-                      <Select 
-                        value={convertToCurrency} 
-                        onValueChange={(value) => setConvertToCurrency(value)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select currency" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {wallets.map((wallet) => (
-                            <SelectItem key={wallet.id} value={wallet.currency}>
-                              {wallet.currency}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="convert-amount">Amount to Convert</Label>
-                    <Input
-                      id="convert-amount"
-                      type="number"
-                      placeholder="Enter amount"
-                      value={convertAmount}
-                      onChange={(e) => {
-                        setConvertAmount(e.target.value);
-                        setConvertedAmount(null);
-                      }}
-                    />
-                  </div>
-                  
-                  {convertedAmount !== null && (
-                    <div className="p-4 rounded-md bg-muted">
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <p className="text-sm text-muted-foreground">You'll receive approximately:</p>
-                          <p className="text-lg font-bold">{formatCurrency(convertedAmount, convertToCurrency)}</p>
-                        </div>
-                        <div>
-                          <p className="text-sm text-muted-foreground">Exchange Rate:</p>
-                          <p className="text-sm">
-                            1 {convertFromCurrency} = {exchangeRates[convertFromCurrency][convertToCurrency]} {convertToCurrency}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </CardContent>
-                <CardFooter className="flex gap-2">
-                  {convertedAmount === null ? (
-                    <Button onClick={calculateConversion} className="w-full">
-                      Calculate Conversion
-                    </Button>
-                  ) : (
-                    <>
-                      <Button variant="outline" onClick={() => setConvertedAmount(null)} className="w-1/2">
-                        Cancel
-                      </Button>
-                      <Button onClick={handleConvert} className="w-1/2">
-                        Confirm Conversion
-                      </Button>
-                    </>
-                  )}
-                </CardFooter>
-              </Card>
-            </TabsContent>
-          </Tabs>
-        </div>
+          <TabsContent value="all" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {isLoading ? (
+                <p>Loading wallets...</p>
+              ) : wallets.length === 0 ? (
+                <p>No wallets found. Create your first wallet to get started.</p>
+              ) : (
+                wallets.map((wallet) => (
+                  <WalletCard 
+                    key={wallet.wallet_id} 
+                    wallet={wallet} 
+                    isMaster={masterWallet?.wallet_id === wallet.wallet_id}
+                    onDeposit={refreshWallets}
+                  />
+                ))
+              )}
+            </div>
+          </TabsContent>
+          
+          <TabsContent value="master" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2">
+              {isLoading ? (
+                <p>Loading master wallet...</p>
+              ) : !masterWallet ? (
+                <p>No master wallet found.</p>
+              ) : (
+                <WalletCard 
+                  wallet={masterWallet} 
+                  isMaster={true} 
+                  onDeposit={refreshWallets}
+                />
+              )}
+            </div>
+          </TabsContent>
+          
+          <TabsContent value="foreign" className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {isLoading ? (
+                <p>Loading foreign wallets...</p>
+              ) : foreignWallets.length === 0 ? (
+                <p>No foreign wallets found. Add a foreign wallet to start trading.</p>
+              ) : (
+                foreignWallets.map((wallet) => (
+                  <WalletCard 
+                    key={wallet.wallet_id} 
+                    wallet={wallet} 
+                    isMaster={false}
+                    onDeposit={refreshWallets}
+                  />
+                ))
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </DashboardLayout>
+  );
+}
+
+// Individual wallet card component
+function WalletCard({ wallet, isMaster, onDeposit }) {
+  const [isDepositDialogOpen, setIsDepositDialogOpen] = useState(false);
+  const [isWithdrawDialogOpen, setIsWithdrawDialogOpen] = useState(false);
+  
+  const formatCurrency = (amount, currency) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency || 'USD',
+    }).format(amount);
+  };
+  
+  return (
+    <Card className={isMaster ? "border-2 border-primary" : ""}>
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2">
+              <Wallet className="h-5 w-5" />
+              {wallet.currency_code} Wallet
+            </CardTitle>
+            <CardDescription>
+              {isMaster ? "Master Wallet" : "Foreign Currency"}
+            </CardDescription>
+          </div>
+          {isMaster && (
+            <div className="rounded-full bg-primary/10 px-2 py-1 text-xs text-primary">
+              Master
+            </div>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">
+          {formatCurrency(wallet.balance, wallet.currency_code)}
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Available Balance
+        </p>
+      </CardContent>
+      <CardFooter className="flex flex-col space-y-2">
+        {isMaster ? (
+          <div className="flex w-full space-x-2">
+            <Dialog open={isDepositDialogOpen} onOpenChange={setIsDepositDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" className="flex-1">Deposit</Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DepositForm 
+                  wallet={wallet} 
+                  onSuccess={() => {
+                    setIsDepositDialogOpen(false);
+                    onDeposit();
+                  }} 
+                />
+              </DialogContent>
+            </Dialog>
+            
+            <Dialog open={isWithdrawDialogOpen} onOpenChange={setIsWithdrawDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" className="flex-1">Withdraw</Button>
+              </DialogTrigger>
+              <DialogContent>
+                <WithdrawForm 
+                  wallet={wallet} 
+                  onSuccess={() => {
+                    setIsWithdrawDialogOpen(false);
+                    onDeposit();
+                  }} 
+                />
+              </DialogContent>
+            </Dialog>
+          </div>
+        ) : (
+          <p className="text-xs text-center text-muted-foreground w-full">
+            Foreign wallets can only be funded through currency exchange from your master wallet.
+          </p>
+        )}
+      </CardFooter>
+    </Card>
+  );
+}
+
+// Deposit funds form component
+function DepositForm({ wallet, onSuccess }) {
+  const { toast } = useToast();
+  const [amount, setAmount] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  
+  const handleDeposit = async (e) => {
+    e.preventDefault();
+    
+    if (!amount || isNaN(amount) || parseFloat(amount) <= 0) {
+      toast({
+        variant: "destructive",
+        title: "Invalid amount",
+        description: "Please enter a valid amount greater than zero",
+      });
+      return;
+    }
+    
+    setIsLoading(true);
+    
+    try {
+      await WalletAPI.depositFunds({
+        currencyCode: wallet.currency_code,
+        amount: parseFloat(amount)
+      });
+
+    toast({
+      title: "Deposit successful",
+        description: `Successfully deposited ${amount} ${wallet.currency_code} to your wallet`,
+      });
+      
+      onSuccess();
+    } catch (error) {
+      console.error("Deposit error:", error);
+      toast({
+        variant: "destructive",
+        title: "Deposit failed",
+        description: error.response?.data?.message || "Failed to deposit funds",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Deposit Funds</DialogTitle>
+        <DialogDescription>
+          Add funds to your {wallet.currency_code} wallet
+        </DialogDescription>
+      </DialogHeader>
+      <form onSubmit={handleDeposit} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="amount">Amount ({wallet.currency_code})</Label>
+          <Input
+            id="amount"
+            type="number"
+            step="0.01"
+            min="0.01"
+            placeholder={`Enter amount in ${wallet.currency_code}`}
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            required
+          />
+        </div>
+        <Button type="submit" className="w-full" disabled={isLoading}>
+          {isLoading ? "Processing..." : "Deposit"}
+        </Button>
+      </form>
+    </>
+  );
+}
+
+// Withdraw funds form component
+function WithdrawForm({ wallet, onSuccess }) {
+  const { toast } = useToast();
+  const [amount, setAmount] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  
+  const handleWithdraw = async (e) => {
+    e.preventDefault();
+    
+    if (!amount || isNaN(amount) || parseFloat(amount) <= 0) {
+      toast({
+        variant: "destructive",
+        title: "Invalid amount",
+        description: "Please enter a valid amount greater than zero",
+      });
+      return;
+    }
+    
+    if (parseFloat(amount) > parseFloat(wallet.balance)) {
+      toast({
+        variant: "destructive",
+        title: "Insufficient funds",
+        description: `Your balance (${wallet.balance} ${wallet.currency_code}) is less than the withdrawal amount`,
+      });
+      return;
+    }
+    
+    setIsLoading(true);
+    
+    try {
+      await WalletAPI.withdrawFunds({
+        currencyCode: wallet.currency_code,
+        amount: parseFloat(amount)
+      });
+
+      toast({
+        title: "Withdrawal successful",
+        description: `Successfully withdrew ${amount} ${wallet.currency_code} from your wallet`,
+      });
+      
+      onSuccess();
+    } catch (error) {
+      console.error("Withdrawal error:", error);
+      toast({
+        variant: "destructive",
+        title: "Withdrawal failed",
+        description: error.response?.data?.message || "Failed to withdraw funds",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Withdraw Funds</DialogTitle>
+        <DialogDescription>
+          Withdraw funds from your {wallet.currency_code} wallet
+        </DialogDescription>
+      </DialogHeader>
+      <form onSubmit={handleWithdraw} className="space-y-4">
+        <div className="space-y-2">
+          <Label htmlFor="withdraw-amount">Amount ({wallet.currency_code})</Label>
+          <Input
+            id="withdraw-amount"
+            type="number"
+            step="0.01"
+            min="0.01"
+            max={wallet.balance}
+            placeholder={`Enter amount in ${wallet.currency_code}`}
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            required
+          />
+          <p className="text-xs text-muted-foreground">
+            Available Balance: {new Intl.NumberFormat('en-US', {
+              style: 'currency',
+              currency: wallet.currency_code,
+            }).format(wallet.balance)}
+          </p>
+        </div>
+        <Button type="submit" className="w-full" disabled={isLoading}>
+          {isLoading ? "Processing..." : "Withdraw"}
+        </Button>
+      </form>
+    </>
+  );
+}
+
+// Add wallet dialog component
+function AddWalletDialog({ onSuccess, existingWallets }) {
+  const { toast } = useToast();
+  const [isOpen, setIsOpen] = useState(false);
+  const [currencyCode, setCurrencyCode] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  
+  // Available currencies (excluding existing ones)
+  const allCurrencies = [
+    { code: 'USD', name: 'US Dollar' },
+    { code: 'EUR', name: 'Euro' },
+    { code: 'GBP', name: 'British Pound' },
+    { code: 'JPY', name: 'Japanese Yen' },
+    { code: 'INR', name: 'Indian Rupee' },
+  ];
+  
+  const existingCurrencyCodes = existingWallets.map(w => w.currency_code);
+  const availableCurrencies = allCurrencies.filter(c => !existingCurrencyCodes.includes(c.code));
+  
+  // Set default currency when dialog opens
+  useEffect(() => {
+    if (isOpen && availableCurrencies.length > 0) {
+      setCurrencyCode(availableCurrencies[0].code);
+    }
+  }, [isOpen, availableCurrencies]);
+  
+  const handleAddWallet = async (e) => {
+    e.preventDefault();
+    
+    if (!currencyCode) {
+      toast({
+        variant: "destructive",
+        title: "Currency required",
+        description: "Please select a currency for your wallet",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    
+    try {
+      await WalletAPI.createWallet({
+        currencyCode,
+        initialBalance: 0
+      });
+      
+      toast({
+        title: "Wallet created",
+        description: `Successfully created ${currencyCode} wallet`,
+      });
+      
+      setIsOpen(false);
+      onSuccess();
+    } catch (error) {
+      console.error("Create wallet error:", error);
+      toast({
+        variant: "destructive",
+        title: "Failed to create wallet",
+        description: error.response?.data?.message || "An error occurred",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  return (
+    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+      <DialogTrigger asChild>
+        <Button>
+          <Plus className="mr-2 h-4 w-4" />
+          Add Wallet
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add New Wallet</DialogTitle>
+          <DialogDescription>
+            Create a wallet for a new currency
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleAddWallet} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="currency">Currency</Label>
+            {availableCurrencies.length > 0 ? (
+              <Select 
+                value={currencyCode} 
+                onValueChange={setCurrencyCode}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Select currency" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableCurrencies.map((currency) => (
+                    <SelectItem key={currency.code} value={currency.code}>
+                      {currency.name} ({currency.code})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <div className="p-3 rounded-md border border-input bg-background text-sm text-muted-foreground">
+                No more currencies available
+              </div>
+            )}
+            {availableCurrencies.length === 0 && (
+              <p className="text-xs text-red-500 mt-1">
+                You already have wallets for all available currencies.
+              </p>
+            )}
+          </div>
+          <Button 
+            type="submit" 
+            className="w-full" 
+            disabled={isLoading || availableCurrencies.length === 0 || !currencyCode}
+          >
+            {isLoading ? "Creating..." : "Create Wallet"}
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// Currency exchange dialog
+function ExchangeDialog({ masterWallet, foreignWallets, onSuccess }) {
+  const { toast } = useToast();
+  const [isOpen, setIsOpen] = useState(false);
+  const [fromCurrency, setFromCurrency] = useState('');
+  const [toCurrency, setToCurrency] = useState('');
+  const [amount, setAmount] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+  
+  // Reset form when dialog opens/closes
+  useEffect(() => {
+    if (isOpen) {
+      setFromCurrency(masterWallet?.currency_code || '');
+      setToCurrency('');
+      setAmount('');
+    }
+  }, [isOpen, masterWallet]);
+  
+  // Get available wallets for selection
+  const getAvailableWallets = () => {
+    const wallets = [];
+    if (masterWallet) {
+      wallets.push(masterWallet);
+    }
+    if (foreignWallets && foreignWallets.length > 0) {
+      wallets.push(...foreignWallets);
+    }
+    return wallets;
+  };
+  
+  // Get destination wallet options (excluding source wallet)
+  const getDestinationOptions = () => {
+    return getAvailableWallets().filter(w => w.currency_code !== fromCurrency);
+  };
+  
+  // Handle exchange submission
+  const handleExchange = async (e) => {
+    e.preventDefault();
+    
+    if (!fromCurrency || !toCurrency) {
+      toast({
+        variant: "destructive",
+        title: "Currencies required",
+        description: "Please select source and destination currencies",
+      });
+      return;
+    }
+
+    if (!amount || isNaN(amount) || parseFloat(amount) <= 0) {
+      toast({
+        variant: "destructive",
+        title: "Invalid amount",
+        description: "Please enter a valid amount greater than zero",
+      });
+      return;
+    }
+
+    setIsLoading(true);
+    
+    try {
+      const response = await WalletAPI.exchangeCurrency({
+        fromCurrency,
+        toCurrency,
+        amount: parseFloat(amount)
+      });
+
+    toast({
+        title: "Exchange successful",
+        description: `Exchanged ${response.data.fromAmount} ${response.data.fromCurrency} to ${response.data.toAmount} ${response.data.toCurrency}`,
+      });
+      
+      setIsOpen(false);
+      onSuccess();
+    } catch (error) {
+      console.error("Exchange error:", error);
+      toast({
+        variant: "destructive",
+        title: "Exchange failed",
+        description: error.response?.data?.message || "An error occurred during exchange",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  
+  // Format balance display
+  const formatBalance = (wallet) => {
+    if (!wallet) return "N/A";
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: wallet.currency_code,
+    }).format(wallet.balance);
+  };
+  
+  // Find wallet by currency code
+  const findWalletByCurrency = (currencyCode) => {
+    if (!currencyCode) return null;
+    return getAvailableWallets().find(w => w.currency_code === currencyCode);
+  };
+  
+  const sourceWallet = findWalletByCurrency(fromCurrency);
+
+  return (
+    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+                  <DialogTrigger asChild>
+        <Button variant="outline">
+          <ArrowLeftRight className="mr-2 h-4 w-4" />
+          Exchange
+        </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+          <DialogTitle>Currency Exchange</DialogTitle>
+                      <DialogDescription>
+            Exchange currency between your wallets
+                      </DialogDescription>
+                    </DialogHeader>
+        <form onSubmit={handleExchange} className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="fromCurrency">From Currency</Label>
+            <Select value={fromCurrency} onValueChange={setFromCurrency}>
+                          <SelectTrigger>
+                <SelectValue placeholder="Select source currency" />
+                          </SelectTrigger>
+                          <SelectContent>
+                {getAvailableWallets().map((wallet) => (
+                  <SelectItem key={wallet.wallet_id} value={wallet.currency_code}>
+                    {wallet.currency_code} ({formatBalance(wallet)})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="amount">Amount</Label>
+                    <Input
+              id="amount"
+                      type="number"
+              step="0.01"
+              min="0.01"
+              max={sourceWallet?.balance || 0}
+              placeholder={`Enter amount in ${fromCurrency}`}
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              disabled={!fromCurrency}
+              required
+            />
+            {sourceWallet && (
+              <p className="text-xs text-muted-foreground">
+                Available: {formatBalance(sourceWallet)}
+              </p>
+            )}
+                  </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="toCurrency">To Currency</Label>
+                    <Select 
+              value={toCurrency} 
+              onValueChange={setToCurrency}
+              disabled={!fromCurrency}
+                    >
+                      <SelectTrigger>
+                <SelectValue placeholder="Select destination currency" />
+                      </SelectTrigger>
+                      <SelectContent>
+                {getDestinationOptions().map((wallet) => (
+                  <SelectItem key={wallet.wallet_id} value={wallet.currency_code}>
+                    {wallet.currency_code}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+          
+          <Button 
+            type="submit" 
+            className="w-full" 
+            disabled={isLoading || !fromCurrency || !toCurrency || !amount}
+          >
+            {isLoading ? "Processing..." : "Exchange Currency"}
+                    </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }

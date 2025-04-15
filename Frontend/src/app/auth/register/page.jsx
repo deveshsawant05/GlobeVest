@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -10,13 +10,16 @@ import { Logo } from "@/components/logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useToast } from "@/hooks/use-toast";
 import { z } from "zod";
+import { useAuth } from "@/contexts/AuthContext";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const registerSchema = z
   .object({
     name: z.string().min(2, { message: "Name must be at least 2 characters" }),
     email: z.string().email({ message: "Please enter a valid email address" }),
-    password: z.string().min(8, { message: "Password must be at least 8 characters" }),
+    password: z.string().min(6, { message: "Password must be at least 6 characters" }),
     confirmPassword: z.string(),
+    baseCurrency: z.string().min(1, { message: "Please select your base currency" }),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: "Passwords do not match",
@@ -26,55 +29,75 @@ const registerSchema = z
 export default function RegisterPage() {
   const router = useRouter();
   const { toast } = useToast();
+  const { register, loading, error, isAuthenticated } = useAuth();
   const [formData, setFormData] = useState({
     name: "",
     email: "",
     password: "",
     confirmPassword: "",
+    baseCurrency: "USD",
   });
-  const [errors, setErrors] = useState({});
-  const [isLoading, setIsLoading] = useState(false);
+  const [validationErrors, setValidationErrors] = useState({});
+
+  useEffect(() => {
+    // If user is already authenticated, redirect to dashboard
+    if (isAuthenticated) {
+      router.push("/dashboard");
+    }
+  }, [isAuthenticated, router]);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
     setFormData((prev) => ({ ...prev, [name]: value }));
-    if (errors[name]) {
-      setErrors((prev) => ({ ...prev, [name]: "" }));
+    if (validationErrors[name]) {
+      setValidationErrors((prev) => ({ ...prev, [name]: "" }));
+    }
+  };
+
+  const handleCurrencyChange = (value) => {
+    setFormData((prev) => ({ ...prev, baseCurrency: value }));
+    if (validationErrors.baseCurrency) {
+      setValidationErrors((prev) => ({ ...prev, baseCurrency: "" }));
     }
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    setIsLoading(true);
 
     try {
+      // Validate form data
       registerSchema.parse(formData);
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
+      
+      // Submit registration
+      await register({
+        name: formData.name,
+        email: formData.email,
+        password: formData.password,
+        baseCurrency: formData.baseCurrency
+      });
+      
       toast({
         title: "Registration successful",
         description: "Your account has been created. Redirecting to login...",
       });
-
-      router.push("/auth/login");
-    } catch (error) {
-      if (error instanceof z.ZodError) {
+      
+      // Auth context will handle redirect to login page
+    } catch (err) {
+      if (err instanceof z.ZodError) {
         const fieldErrors = {};
-        error.errors.forEach((err) => {
-          if (err.path[0]) {
-            fieldErrors[err.path[0]] = err.message;
+        err.errors.forEach((error) => {
+          if (error.path[0]) {
+            fieldErrors[error.path[0]] = error.message;
           }
         });
-        setErrors(fieldErrors);
+        setValidationErrors(fieldErrors);
       } else {
         toast({
           variant: "destructive",
           title: "Registration failed",
-          description: "Please check your information and try again.",
+          description: error || "Please check your information and try again.",
         });
       }
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -99,25 +122,44 @@ export default function RegisterPage() {
               <div className="space-y-2">
                 <Label htmlFor="name">Full Name</Label>
                 <Input id="name" name="name" placeholder="John Doe" value={formData.name} onChange={handleChange} required />
-                {errors.name && <p className="text-sm text-destructive">{errors.name}</p>}
+                {validationErrors.name && <p className="text-sm text-destructive">{validationErrors.name}</p>}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="email">Email</Label>
                 <Input id="email" name="email" type="email" placeholder="name@example.com" value={formData.email} onChange={handleChange} required />
-                {errors.email && <p className="text-sm text-destructive">{errors.email}</p>}
+                {validationErrors.email && <p className="text-sm text-destructive">{validationErrors.email}</p>}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="password">Password</Label>
                 <Input id="password" name="password" type="password" placeholder="••••••••" value={formData.password} onChange={handleChange} required />
-                {errors.password && <p className="text-sm text-destructive">{errors.password}</p>}
+                {validationErrors.password && <p className="text-sm text-destructive">{validationErrors.password}</p>}
               </div>
               <div className="space-y-2">
                 <Label htmlFor="confirmPassword">Confirm Password</Label>
                 <Input id="confirmPassword" name="confirmPassword" type="password" placeholder="••••••••" value={formData.confirmPassword} onChange={handleChange} required />
-                {errors.confirmPassword && <p className="text-sm text-destructive">{errors.confirmPassword}</p>}
+                {validationErrors.confirmPassword && <p className="text-sm text-destructive">{validationErrors.confirmPassword}</p>}
               </div>
-              <Button type="submit" className="w-full" disabled={isLoading}>
-                {isLoading ? "Creating account..." : "Create account"}
+              <div className="space-y-2">
+                <Label htmlFor="baseCurrency">Base Currency</Label>
+                <Select
+                  value={formData.baseCurrency}
+                  onValueChange={handleCurrencyChange}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select your base currency" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="USD">US Dollar (USD)</SelectItem>
+                    <SelectItem value="EUR">Euro (EUR)</SelectItem>
+                    <SelectItem value="GBP">British Pound (GBP)</SelectItem>
+                    <SelectItem value="JPY">Japanese Yen (JPY)</SelectItem>
+                    <SelectItem value="INR">Indian Rupee (INR)</SelectItem>
+                  </SelectContent>
+                </Select>
+                {validationErrors.baseCurrency && <p className="text-sm text-destructive">{validationErrors.baseCurrency}</p>}
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? "Creating account..." : "Create account"}
               </Button>
             </form>
             <div className="text-center text-sm">

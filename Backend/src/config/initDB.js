@@ -6,14 +6,18 @@ const initDB = async () => {
   try {
     console.log("Initializing database...");
 
-    // Read and execute schema.sql every time the server starts
+    // Execute schema.sql (Tables & constraints)
     const schemaPath = path.join(__dirname, "schema.sql");
     const schema = fs.readFileSync(schemaPath, "utf8");
-
-    // Split multiple SQL statements (only works if queries are separated by semicolons)
     await pool.query(schema);
-
     console.log("Database schema executed successfully.");
+
+    // Execute triggers.sql (Triggers & functions)
+    // const triggersPath = path.join(__dirname, "triggers.sql");
+    // const triggers = fs.readFileSync(triggersPath, "utf8");
+    // await pool.query(triggers);
+    // console.log("Database triggers executed successfully.");
+
   } catch (error) {
     console.error("Error initializing database:", error);
   }

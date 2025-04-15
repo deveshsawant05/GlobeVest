@@ -7,10 +7,34 @@ import { Logo } from "@/components/logo";
 import { Bell } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { useAuth } from "@/contexts/AuthContext";
 
 export function DashboardLayout({ children }) {
   const [open, setOpen] = useState(false);
+  const { user, isAuthenticated, loading } = useAuth();
+  const router = useRouter();
+  
+  // Redirect to login if not authenticated
+  useEffect(() => {
+    if (!loading && !isAuthenticated) {
+      router.push('/auth/login');
+    }
+  }, [isAuthenticated, loading, router]);
+  
+  if (loading) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
+  // Don't render the dashboard if not authenticated
+  if (!isAuthenticated) {
+    return null;
+  }
   
   return (
     <div className="flex min-h-screen flex-col">
@@ -51,10 +75,6 @@ export function DashboardLayout({ children }) {
             <Logo />
           </div>
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" className="relative">
-              <Bell className="h-5 w-5" />
-              <span className="absolute top-1 right-1 h-2 w-2 rounded-full bg-destructive"></span>
-            </Button>
             <ThemeToggle />
             <UserNav />
           </div>

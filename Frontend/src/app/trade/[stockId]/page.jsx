@@ -20,11 +20,36 @@ import {
   ComposedChart, Scatter
 } from "recharts";
 
+// Timestamp formatting options based on time range
 const timeRangeOptions = {
-  "5m": { label: "5 Min", interval: 5 * 60 * 1000, dataPoints: 60, format: "HH:mm:ss" },
-  "1h": { label: "1 Hour", interval: 60 * 60 * 1000, dataPoints: 60, format: "HH:mm" },
-  "1d": { label: "1 Day", interval: 24 * 60 * 60 * 1000, dataPoints: 24, format: "HH:mm" },
-  "1M": { label: "1 Month", interval: 30 * 24 * 60 * 60 * 1000, dataPoints: 30, format: "MMM dd" }
+  "5m": {
+    tooltipFormat: "HH:mm:ss", // Show hours, minutes, seconds
+    axisFormat: "HH:mm:ss",
+    dataPoints: 60, // 60 data points for 5 minutes (1 per 5 seconds)
+    interval: 5 * 1000, // 5 seconds
+    timeMs: 5 * 60 * 1000
+  },
+  "1h": {
+    tooltipFormat: "HH:mm",
+    axisFormat: "HH:mm",
+    dataPoints: 60, // 60 data points for 1 hour (1 per minute)
+    interval: 60 * 1000, // 1 minute
+    timeMs: 60 * 60 * 1000
+  },
+  "1d": {
+    tooltipFormat: "HH:mm",
+    axisFormat: "HH:mm",
+    dataPoints: 96, // 96 data points for 1 day (1 per 15 minutes)
+    interval: 15 * 60 * 1000, // 15 minutes
+    timeMs: 24 * 60 * 60 * 1000
+  },
+  "1M": {
+    tooltipFormat: "MMM dd",
+    axisFormat: "MMM dd",
+    dataPoints: 30, // 30 data points for 1 month (1 per day)
+    interval: 24 * 60 * 60 * 1000, // 1 day
+    timeMs: 30 * 24 * 60 * 60 * 1000
+  }
 };
 
 export default function TradePage() {
@@ -33,6 +58,14 @@ export default function TradePage() {
   const { toast } = useToast();
   const socket = useSocket(process.env.NEXT_PUBLIC_STOCK_MARKET_URL);
   
+  // Time range options
+  const timeRangeOptions = {
+    "5m": { label: "5 Min", timeMs: 5 * 60 * 1000, interval: 1 },
+    "1h": { label: "1 Hour", timeMs: 60 * 60 * 1000, interval: 5 },
+    "1d": { label: "1 Day", timeMs: 24 * 60 * 60 * 1000, interval: 30 },
+    "1mo": { label: "1 Month", timeMs: 30 * 24 * 60 * 60 * 1000, interval: 60 * 12 }
+  };
+
   // State variables
   const [stock, setStock] = useState(null);
   const [wallets, setWallets] = useState([]);
@@ -45,6 +78,24 @@ export default function TradePage() {
   const [timeRange, setTimeRange] = useState("1d");
   const [chartStyle, setChartStyle] = useState("line"); // 'line' or 'candlestick'
   const priceHistoryRef = useRef([]);
+  const allPriceHistoryRef = useRef([]); // Store all historical data from websocket and API
+  
+  // Create stable references for chart data with fixed size
+  const chartDataRef = useRef({
+    "5m": Array(60).fill(null), // 60 points for 5 minutes (one per 5 seconds)
+    "1h": Array(60).fill(null), // 60 points for 1 hour (one per minute)
+    "1d": Array(96).fill(null), // 96 points for 1 day (one per 15 minutes)
+    "1M": Array(30).fill(null)  // 30 points for 1 month (one per day)
+  });
+  
+  // Use a ref to track the last update time to prevent too frequent UI updates
+  const lastUpdateTimeRef = useRef(Date.now());
+  
+  // Use a ref to track when we should force an update
+  const shouldUpdateRef = useRef(false);
+  
+  // State for forcing chart re-renders (only when necessary)
+  const [chartUpdateTrigger, setChartUpdateTrigger] = useState(0);
   
   // Get market trend for display
   const getMarketTrend = () => {
@@ -68,6 +119,188 @@ export default function TradePage() {
     fetchData();
   }, [stockId]);
   
+  // Helper function to get time range in milliseconds
+  const getRangeTimeMs = (range) => {
+    switch(range) {
+      case "5m": return 5 * 60 * 1000;
+      case "1h": return 60 * 60 * 1000;
+      case "1d": return 24 * 60 * 60 * 1000;
+      case "1M": return 30 * 24 * 60 * 60 * 1000;
+      default: return 24 * 60 * 60 * 1000;
+    }
+  };
+
+  // Filter data based on the selected time range
+  const getDataForTimeRange = (data, range) => {
+    if (!data || data.length === 0) return [];
+    
+    const now = new Date();
+    let cutoffTime = new Date(now.getTime() - getRangeTimeMs(range));
+    
+    // Filter data to only include points after cutoff time
+    let filteredData = data.filter(point => point.fullDate >= cutoffTime);
+    
+    // If we don't have enough points, don't filter
+    if (filteredData.length < 5) {
+      filteredData = [...data]; // Use all available data
+    }
+    
+    // Re-index the filtered data to ensure sequential IDs
+    return filteredData.map((point, index) => ({
+      ...point,
+      id: index
+    }));
+  };
+  
+  // Populate chart data for all time ranges
+  const populateChartData = (data) => {
+    // Sort data by time (oldest to newest)
+    const sortedData = [...data].sort((a, b) => a.fullDate.getTime() - b.fullDate.getTime());
+    
+    // Get current time
+    const now = new Date();
+    
+    // For each time range, fill the chart data arrays
+    Object.keys(chartDataRef.current).forEach(range => {
+      const rangeData = chartDataRef.current[range];
+      
+      // Determine interval and start time based on range
+      let interval, startTime;
+      switch(range) {
+        case "5m":
+          interval = 5 * 1000; // 5 seconds
+          startTime = new Date(now.getTime() - 5 * 60 * 1000);
+          break;
+        case "1h":
+          interval = 60 * 1000; // 1 minute
+          startTime = new Date(now.getTime() - 60 * 60 * 1000);
+          break;
+        case "1d":
+          interval = 15 * 60 * 1000; // 15 minutes
+          startTime = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+          break;
+        case "1M":
+          interval = 24 * 60 * 60 * 1000; // 1 day
+          startTime = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          break;
+      }
+      
+      // Clear the array
+      rangeData.fill(null);
+      
+      // Find data points for each interval - working backwards from now
+      for (let i = 0; i < rangeData.length; i++) {
+        const pointTime = new Date(startTime.getTime() + (i * interval));
+        
+        // Find the closest data point before this time
+        const closestPoint = sortedData.find(point => 
+          point.fullDate <= pointTime
+        );
+        
+        // Find the next data point to interpolate between if needed
+        const nextPoint = sortedData.find(point => 
+          point.fullDate > pointTime
+        );
+        
+        if (closestPoint) {
+          // Use the closest point for this interval
+          rangeData[i] = {
+            ...closestPoint,
+            id: i, // Use sequential index for proper left-to-right display
+            fullDate: pointTime
+          };
+        } else if (i > 0 && rangeData[i-1]) {
+          // If no point found but we have a previous valid point, use that 
+          // with adjusted timestamp
+          rangeData[i] = {
+            ...rangeData[i-1],
+            id: i,
+            fullDate: pointTime
+          };
+        }
+      }
+    });
+    
+    // Store all data
+    allPriceHistoryRef.current = sortedData;
+    
+    // Set initial filtered data
+    priceHistoryRef.current = [...chartDataRef.current[timeRange]].filter(Boolean);
+    setPriceHistory(priceHistoryRef.current);
+  };
+  
+  // Helper function to get appropriate axis ticks
+  const getAxisTicks = (dataLength) => {
+    if (dataLength <= 5) return undefined; // Let Recharts decide for small datasets
+    
+    // Generate 5 evenly spaced ticks
+    const result = [];
+    const tickCount = Math.min(5, dataLength);
+    const step = Math.floor(dataLength / (tickCount - 1));
+    
+    for (let i = 0; i < dataLength; i += step) {
+      result.push(i);
+      if (result.length >= tickCount - 1) break;
+    }
+    
+    // Always include the last point
+    if (dataLength > 1 && result[result.length - 1] !== dataLength - 1) {
+      result.push(dataLength - 1);
+    }
+    
+    return result;
+  };
+
+  // Generate fallback data if needed
+  const generateInitialData = (currentPrice) => {
+    console.warn("Using fallback data generation - this should only be used if the WebSocket server is not available");
+    
+    // Create an empty array to hold the data
+    const data = [];
+    
+    // Current time
+    const now = new Date();
+    
+    // Create a data point with current price
+    const createDataPoint = (timestamp, price) => {
+      // Add some randomness to the price (±1%)
+      const randomFactor = 0.98 + Math.random() * 0.04; // between 0.98 and 1.02
+      const adjustedPrice = price * randomFactor;
+      
+      return {
+        id: data.length,
+        price: parseFloat(adjustedPrice.toFixed(2)),
+        open: parseFloat(adjustedPrice.toFixed(2)),
+        high: parseFloat((adjustedPrice * 1.005).toFixed(2)),
+        low: parseFloat((adjustedPrice * 0.995).toFixed(2)),
+        close: parseFloat(adjustedPrice.toFixed(2)),
+        volume: Math.floor(Math.random() * 10000) + 1000,
+        fullDate: new Date(timestamp),
+        date: new Date(timestamp).toLocaleDateString(),
+        time: new Date(timestamp).toLocaleTimeString()
+      };
+    };
+    
+    // Generate data points at regular intervals for the last 30 days
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const totalPoints = 100; // Generate 100 points
+    const interval = (now.getTime() - thirtyDaysAgo.getTime()) / totalPoints;
+    
+    for (let i = 0; i < totalPoints; i++) {
+      const timestamp = new Date(thirtyDaysAgo.getTime() + i * interval);
+      data.push(createDataPoint(timestamp, currentPrice));
+    }
+    
+    // Sort by time
+    data.sort((a, b) => a.fullDate.getTime() - b.fullDate.getTime());
+    
+    // Fill the chart data with the generated data
+    populateChartData(data);
+    
+    // Trigger a chart update
+    setChartUpdateTrigger(prev => prev + 1);
+  };
+
   // Main data fetching function
   const fetchData = async () => {
     try {
@@ -89,6 +322,52 @@ export default function TradePage() {
         setSelectedWallet(filteredWallets[0].wallet_id.toString());
       }
       
+      // Fetch initial price history from API
+      try {
+        // Use a larger timeframe (1M) to have data for all time ranges
+        const response = await StocksAPI.getStockHistory(stockId, "1M");
+        
+        if (response.data && response.data.length > 0) {
+          console.log("Received historical price data points:", response.data.length);
+          
+          // Format the data for the chart
+          const formattedData = response.data.map((point, index) => {
+            // Convert UTC timestamp to local time
+            const utcTimestamp = point.timestamp;
+            const localDate = new Date(utcTimestamp);
+            
+            return {
+              id: index,
+              date: localDate.toLocaleDateString(),
+              time: localDate.toLocaleTimeString(),
+              fullDate: localDate, // Store the local date object
+              price: parseFloat(point.price),
+              open: parseFloat(point.open || point.price),
+              high: parseFloat(point.high || point.price * 1.005),
+              low: parseFloat(point.low || point.price * 0.995),
+              close: parseFloat(point.close || point.price),
+              volume: point.volume || Math.floor(Math.random() * 10000) + 1000
+            };
+          });
+          
+          // Sort chronologically from oldest to newest
+          formattedData.sort((a, b) => a.fullDate.getTime() - b.fullDate.getTime());
+          
+          // Fill chart data for each time range
+          populateChartData(formattedData);
+          
+          // Trigger initial render
+          setChartUpdateTrigger(prev => prev + 1);
+        } else {
+          // Fallback to generated data if API returns empty
+          console.warn("No historical data received from API, falling back to generated data");
+          generateInitialData(stockResponse.data.last_price);
+        }
+      } catch (error) {
+        console.error("Error fetching historical data:", error);
+        generateInitialData(stockResponse.data.last_price);
+      }
+      
       setInitialLoading(false);
     } catch (error) {
       console.error("Error fetching data:", error);
@@ -102,279 +381,227 @@ export default function TradePage() {
     }
   };
   
-  // Fetch data on time range change - using useCallback to memoize the function
-  const fetchPriceHistoryForTimeRange = useCallback(async (range) => {
-    if (!stockId || !stock) return;
-    
-    console.log("Fetching price history for range:", range);
-    setPriceHistory([]); // Clear existing data
-    
-    try {
-      setDataLoading(true); // Use dataLoading instead of initialLoading
-      const config = timeRangeOptions[range];
-      
-      // Try to fetch from the backend API
-      const response = await StocksAPI.getStockHistory(stockId, range);
-      
-      if (response.data && response.data.length > 0) {
-        console.log("Received actual price history data from backend:", response.data);
-        
-        // Format the data for the chart
-        const formattedData = response.data.map((point, index) => {
-          // Convert UTC timestamp to local time
-          const utcTimestamp = point.timestamp;
-          const localDate = new Date(utcTimestamp);
-          
-          return {
-            id: index,
-            date: localDate.toLocaleDateString(),
-            time: localDate.toLocaleTimeString(),
-            fullDate: localDate, // Store the local date object
-            price: parseFloat(point.price),
-            open: parseFloat(point.open || point.price),
-            high: parseFloat(point.high || point.price * 1.005),
-            low: parseFloat(point.low || point.price * 0.995),
-            close: parseFloat(point.close || point.price),
-            volume: point.volume || Math.floor(Math.random() * 10000) + 1000
-          };
-        });
-        
-        console.log("Formatted chart data for range:", range, formattedData);
-        setPriceHistory(formattedData);
-        priceHistoryRef.current = formattedData;
-      } else {
-        console.warn("No price history data received from backend, falling back to mock data");
-        generateStockData(stock.last_price, config.dataPoints, config.interval);
-      }
-      setDataLoading(false);
-    } catch (error) {
-      console.error("Error fetching price history:", error);
-      // Fallback to generated data in case of error
-      const config = timeRangeOptions[range];
-      console.warn("Error getting data from backend, falling back to mock data");
-      generateStockData(stock.last_price, config.dataPoints, config.interval);
-      setDataLoading(false);
-    }
-  }, [stockId, stock]);
-  
-  // Use effect to respond to time range changes
+  // Effect for websocket connection and data handling
   useEffect(() => {
-    if (!stockId || !stock) return;
-    console.log("TIME RANGE CHANGED TO:", timeRange);
-    fetchPriceHistoryForTimeRange(timeRange);
-  }, [timeRange, fetchPriceHistoryForTimeRange]);
-  
-  // Subscribe to real-time stock updates
-  useEffect(() => {
-    if (!stockId || !socket) return;
+    if (!stock || !socket) return;
+
+    console.log(`Setting up real-time stock updates for ${stock.name} (${stock.stock_id})`);
     
-    console.log("Setting up WebSocket connection for stock:", stockId);
+    // Subscribe to specific stock updates
+    socket.emit('subscribeToStock', stock.stock_id);
     
-    // Subscribe to stock updates
-    socket.emit('subscribeToStock', stockId);
-    
-    // Handler for stock updates
+    // Listen for both individual and batch updates
     const handleStockUpdate = (updatedStock) => {
-      console.log("Received real-time stock update:", updatedStock);
+      if (updatedStock.stock_id !== stock.stock_id) return;
       
-      if (updatedStock && updatedStock.stock_id === stockId) {
-        setStock(prevStock => {
-          if (!prevStock) return updatedStock;
-          
-          // Only append a new price point if the price actually changed
-          if (prevStock.last_price !== updatedStock.last_price) {
-            console.log(`Price changed from ${prevStock.last_price} to ${updatedStock.last_price}`);
-            appendPricePoint(updatedStock.last_price);
-          }
-          
-          return {
-            ...prevStock,
-            ...updatedStock,
-            // Ensure we keep the change percentage if it's not in the update
-            change_percentage: updatedStock.change_percentage ?? prevStock.change_percentage
-          };
-        });
-      }
-    };
-    
-    // Set up event listeners for stock updates
-    socket.on('stockUpdate', handleStockUpdate);
-    socket.on('stockPriceUpdate', handleStockUpdate);
-    
-    // Handle connection events
-    const handleConnect = () => {
-      console.log("WebSocket connected, resubscribing to:", stockId);
-      socket.emit('subscribeToStock', stockId);
-    };
-    
-    const handleError = (error) => {
-      console.error("WebSocket error:", error);
-      toast({
-        variant: "destructive",
-        title: "Connection Error",
-        description: "Lost connection to live market data",
-      });
-    };
-    
-    socket.on('connect', handleConnect);
-    socket.on('error', handleError);
-    
-    // Cleanup subscriptions
-    return () => {
-      console.log("Cleaning up WebSocket subscriptions");
-      socket.off('stockUpdate', handleStockUpdate);
-      socket.off('stockPriceUpdate', handleStockUpdate);
-      socket.off('connect', handleConnect);
-      socket.off('error', handleError);
-      socket.emit('unsubscribeFromStock', stockId);
-    };
-  }, [stockId, socket, toast]);
-  
-  // Append a new price point to the chart data
-  const appendPricePoint = (newPrice) => {
-    // Skip if there's no history data yet
-    if (!priceHistoryRef.current || priceHistoryRef.current.length === 0) {
-      console.log("No existing price history to append to, skipping update");
-      return;
-    }
-    
-    const currentTime = new Date(); // Current time in local timezone
-    const lastPoint = priceHistoryRef.current[priceHistoryRef.current.length - 1];
-    const lastTime = lastPoint.fullDate;
-    
-    console.log(`Checking if should add new data point: lastTime=${lastTime.toISOString()}, currentTime=${currentTime.toISOString()}, timeRange=${timeRange}`);
-    
-    // Only add a new point if enough time has passed based on the selected range
-    // or if it's the first update after switching ranges
-    if (!shouldAddNewDataPoint(lastTime, currentTime, timeRange)) {
-      console.log("Updating last point price instead of adding new point");
-      // Just update the last point's price if we're not adding a new point
-      const updatedHistory = [...priceHistoryRef.current];
-      updatedHistory[updatedHistory.length - 1] = {
-        ...lastPoint,
-        price: newPrice,
-        close: newPrice,
-        // Update high/low if needed
-        high: Math.max(lastPoint.high, newPrice),
-        low: Math.min(lastPoint.low, newPrice)
+      console.log("Received stock update:", updatedStock.symbol, updatedStock.last_price);
+      
+      // Update the stock data without triggering a chart re-render
+      setStock(current => ({
+        ...current,
+        ...updatedStock
+      }));
+      
+      // Create new data point
+      const timestamp = new Date();
+      const newDataPoint = {
+        price: parseFloat(updatedStock.last_price),
+        open: parseFloat(updatedStock.last_price),
+        high: parseFloat(updatedStock.day_high || updatedStock.last_price),
+        low: parseFloat(updatedStock.day_low || updatedStock.last_price),
+        close: parseFloat(updatedStock.last_price),
+        volume: parseInt(updatedStock.volume || 0),
+        fullDate: timestamp,
+        date: timestamp.toLocaleDateString(),
+        time: timestamp.toLocaleTimeString()
       };
       
-      setPriceHistory(updatedHistory);
-      priceHistoryRef.current = updatedHistory;
-      return;
-    }
-    
-    console.log("Adding new price point:", newPrice);
-    
-    // Add a new data point with the new price
-    const newPoint = {
-      id: lastPoint.id + 1,
-      date: currentTime.toLocaleDateString(),
-      time: currentTime.toLocaleTimeString(),
-      fullDate: currentTime,
-      price: newPrice,
-      open: lastPoint.close,
-      high: Math.max(lastPoint.close, newPrice),
-      low: Math.min(lastPoint.close, newPrice),
-      close: newPrice,
-      volume: Math.floor(lastPoint.volume * (0.8 + Math.random() * 0.4))
+      // Add to all historical data
+      allPriceHistoryRef.current = [
+        ...allPriceHistoryRef.current,
+        newDataPoint
+      ].sort((a, b) => a.fullDate.getTime() - b.fullDate.getTime());
+      
+      // Update each time range's data
+      Object.keys(chartDataRef.current).forEach(range => {
+        const rangeData = chartDataRef.current[range];
+        
+        // Determine the interval for this range
+        let interval;
+        switch(range) {
+          case "5m": interval = 5 * 1000; break;  // 5 seconds
+          case "1h": interval = 60 * 1000; break; // 1 minute
+          case "1d": interval = 15 * 60 * 1000; break; // 15 minutes
+          case "1M": interval = 24 * 60 * 60 * 1000; break; // 1 day
+        }
+        
+        // Find the right position for the new data point
+        const now = new Date();
+        const rangeStartTime = new Date(now.getTime() - getRangeTimeMs(range));
+        
+        // Only update if the new point is within this range's time window
+        if (timestamp >= rangeStartTime) {
+          // Calculate which interval this point belongs to
+          const timeSinceStart = timestamp.getTime() - rangeStartTime.getTime();
+          const intervalIndex = Math.floor(timeSinceStart / interval);
+          
+          // Only update if within array bounds (should always be true, but just in case)
+          if (intervalIndex >= 0 && intervalIndex < rangeData.length) {
+            rangeData[intervalIndex] = {
+              ...newDataPoint,
+              id: intervalIndex
+            };
+          }
+        }
+      });
+      
+      // Only update the chart every second at most to prevent glitches
+      const now = Date.now();
+      if (now - lastUpdateTimeRef.current > 1000) {
+        lastUpdateTimeRef.current = now;
+        
+        // Update the price history from the fixed array
+        const currentRangeData = chartDataRef.current[timeRange];
+        priceHistoryRef.current = [...currentRangeData].filter(Boolean);
+        
+        // Use the precise reference for the current time range
+        setPriceHistory(priceHistoryRef.current);
+        
+        // Also trigger a chart update
+        setChartUpdateTrigger(prev => prev + 1);
+      } else {
+        // Mark that we need an update soon
+        shouldUpdateRef.current = true;
+      }
     };
     
-    // Add the new point to the history
-    const updatedHistory = [...priceHistoryRef.current, newPoint];
-    
-    // Remove oldest point if we're at the limit for the current time range
-    if (updatedHistory.length > timeRangeOptions[timeRange].dataPoints) {
-      console.log("Removing oldest point to maintain chart size");
-      updatedHistory.shift();
-    }
-    
-    // Update the IDs to be sequential
-    updatedHistory.forEach((point, index) => {
-      point.id = index;
+    socket.on('stockUpdate', handleStockUpdate);
+    socket.on('stocksUpdate', (stocks) => {
+      const updatedStock = stocks.find(s => s.stock_id === stock.stock_id);
+      if (updatedStock) handleStockUpdate(updatedStock);
     });
     
-    console.log(`Chart now has ${updatedHistory.length} points`);
-    setPriceHistory(updatedHistory);
-    priceHistoryRef.current = updatedHistory;
+    // Set up an interval to check for pending updates
+    const updateInterval = setInterval(() => {
+      if (shouldUpdateRef.current) {
+        shouldUpdateRef.current = false;
+        lastUpdateTimeRef.current = Date.now();
+        
+        // Get the current data for selected time range
+        const currentRangeData = chartDataRef.current[timeRange];
+        priceHistoryRef.current = [...currentRangeData].filter(Boolean);
+        
+        // Update the chart with current time range data
+        setPriceHistory(priceHistoryRef.current);
+        setChartUpdateTrigger(prev => prev + 1);
+      }
+    }, 1000); // Check every second
+    
+    // Logging for debugging
+    console.log("Socket connection status:", socket.connected);
+    socket.on('connect', () => {
+      console.log("Socket connected successfully");
+      // Re-subscribe after reconnection
+      socket.emit('subscribeToStock', stock.stock_id);
+    });
+    
+    socket.on('disconnect', () => {
+      console.log("Socket disconnected");
+    });
+    
+    // Cleanup on unmount
+    return () => {
+      console.log(`Unsubscribing from ${stock.name} updates`);
+      socket.emit('unsubscribeFromStock', stock.stock_id);
+      socket.off('stockUpdate');
+      socket.off('stocksUpdate');
+      socket.off('connect');
+      socket.off('disconnect');
+      clearInterval(updateInterval);
+    };
+  }, [stock, socket, timeRange]);
+  
+  // Fetch historical data when component mounts
+  useEffect(() => {
+    if (!stock) return;
+    
+    const fetchHistoricalData = async () => {
+      try {
+        setDataLoading(true);
+        const response = await StocksAPI.getStockHistory(stock.stock_id, "1M");
+        
+        if (response.data && response.data.length > 0) {
+          console.log(`Received ${response.data.length} historical data points for ${stock.symbol}`);
+          
+          // Format the data for the chart
+          const formattedData = response.data.map((point, index) => {
+            const localDate = new Date(point.timestamp);
+            
+            return {
+              id: index,
+              date: localDate.toLocaleDateString(),
+              time: localDate.toLocaleTimeString(),
+              fullDate: localDate,
+              price: parseFloat(point.price),
+              open: parseFloat(point.open || point.price),
+              high: parseFloat(point.high || point.price * 1.005),
+              low: parseFloat(point.low || point.price * 0.995),
+              close: parseFloat(point.close || point.price),
+              volume: point.volume || Math.floor(Math.random() * 10000) + 1000
+            };
+          });
+          
+          // Sort chronologically
+          formattedData.sort((a, b) => a.fullDate.getTime() - b.fullDate.getTime());
+          
+          // Store all historical data
+          allPriceHistoryRef.current = formattedData;
+          
+          // Filter for the selected time range
+          const filteredData = getDataForTimeRange(formattedData, timeRange);
+          priceHistoryRef.current = filteredData;
+          setPriceHistory(filteredData);
+        } else {
+          console.warn("No historical data received, generating mock data");
+          generateInitialData(stock.last_price);
+        }
+      } catch (error) {
+        console.error("Error fetching historical data:", error);
+        generateInitialData(stock.last_price);
+      } finally {
+        setDataLoading(false);
+      }
+    };
+    
+    fetchHistoricalData();
+  }, [stock]);
+  
+  // Handle time range changes
+  const handleTimeRangeChange = (newRange) => {
+    console.log(`Changing time range from ${timeRange} to ${newRange}`);
+    
+    // Set new time range
+    setTimeRange(newRange);
+    
+    // Get data for the new time range from our fixed arrays
+    const rangeData = chartDataRef.current[newRange];
+    const filteredData = [...rangeData].filter(Boolean);
+    
+    // Update the price history with the new filtered data
+    priceHistoryRef.current = filteredData;
+    setPriceHistory(filteredData);
+    
+    // Force chart update
+    setChartUpdateTrigger(prev => prev + 1);
   };
   
-  // Determine if we should add a new data point based on timeframe
-  const shouldAddNewDataPoint = (lastTime, currentTime, range) => {
-    if (!lastTime) return true;
-    
-    const timeDiff = currentTime - lastTime;
-    
-    switch (range) {
-      case "5m":
-        return timeDiff >= 5 * 1000; // Add a point every 5 seconds in 5min view
-      case "1h":
-        return timeDiff >= 60 * 1000; // Add a point every minute in 1h view
-      case "1d":
-        return timeDiff >= 15 * 60 * 1000; // Add a point every 15 minutes in 1d view
-      case "1M":
-        return timeDiff >= 24 * 60 * 60 * 1000; // Add a point every day in 1M view
-      default:
-        return timeDiff >= 60 * 1000; // Default to 1 minute
-    }
+  // Filter price history data based on the selected time range
+  const getFilteredPriceHistory = () => {
+    return priceHistory;
   };
   
-  // Generate realistic stock price history data
-  const generateStockData = (currentPrice, numPoints, interval) => {
-    console.log("Generating mock price history data as fallback");
-    
-    // Ensure we have a valid startTime in local time zone
-    const now = new Date();
-    const localStartTime = new Date(now.getTime() - (numPoints * interval));
-    
-    const volatility = 0.015; // 1.5% volatility
-    let lastPrice = currentPrice;
-    const trend = 0.0001; // Very slight upward trend
-    const data = [];
-    
-    for (let i = 0; i < numPoints; i++) {
-      // Calculate time for this data point in local time
-      const pointTime = new Date(localStartTime.getTime() + (i * interval));
-      
-      // Simulate price movement with some randomness and trend
-      const change = lastPrice * (Math.random() * volatility * 2 - volatility + trend);
-      const newPrice = Math.max(lastPrice + change, 0.01);
-      
-      // Add some extra volatility at certain times
-      const timeMultiplier = Math.sin((pointTime.getHours() / 24) * Math.PI) * 0.5 + 0.5;
-      const adjustedPrice = newPrice * (1 + (Math.random() * 0.01 - 0.005) * timeMultiplier);
-      
-      const roundedPrice = parseFloat(adjustedPrice.toFixed(2));
-      lastPrice = roundedPrice;
-      
-      // Calculate open, high, low, close values for candlestick charts
-      const open = parseFloat((roundedPrice * (1 + (Math.random() * 0.01 - 0.005))).toFixed(2));
-      const close = roundedPrice;
-      const high = parseFloat(Math.max(open, close) * (1 + Math.random() * 0.005).toFixed(2));
-      const low = parseFloat(Math.min(open, close) * (1 - Math.random() * 0.005).toFixed(2));
-      
-      // Add volume with some randomness
-      const volume = Math.floor(50000 + Math.random() * 1000000);
-      
-      data.push({
-        id: i,
-        date: pointTime.toLocaleDateString(),
-        time: pointTime.toLocaleTimeString(),
-        fullDate: pointTime,
-        price: roundedPrice,
-        open,
-        high,
-        low,
-        close,
-        volume
-      });
-    }
-    
-    console.log("Generated mock data with " + data.length + " points");
-    
-    setPriceHistory(data);
-    priceHistoryRef.current = data;
-  };
+  // Get filtered data based on time range
+  const filteredPriceHistory = useMemo(() => getFilteredPriceHistory(), [priceHistory]);
   
   // Format currency
   const formatCurrency = (amount, currency) => {
@@ -486,24 +713,38 @@ export default function TradePage() {
     }
   };
   
-  // Format time based on selected time range - memoized to prevent re-rendering
-  const formatChartTime = useCallback((timestamp) => {
-    if (!timestamp) return "";
-    // Convert the UTC timestamp to local time
-    const localDate = convertUTCToLocal(timestamp);
+  // Format time for chart tooltip based on selected time range
+  const formatChartTime = (timestamp) => {
+    const localDate = new Date(timestamp);
     
-    switch(timeRange) {
-      case "5m":
-        return localDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      case "1h":
-        return localDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-      case "1d":
-        return localDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-      case "1M":
-      default:
-        return localDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    // Use appropriate format based on time range
+    const config = timeRangeOptions[timeRange];
+    const options = {
+      hour: "numeric",
+      minute: "numeric"
+    };
+    
+    if (timeRange === "5m" || timeRange === "1h") {
+      // For small time ranges, show seconds
+      options.second = "numeric";
     }
-  }, [timeRange]);
+    
+    if (timeRange === "1M") {
+      // For monthly view, show date
+      options.month = "short";
+      options.day = "numeric";
+      delete options.hour;
+      delete options.minute;
+    }
+    
+    if (timeRange === "1d") {
+      // For daily view, keep hours and minutes
+      options.hour = "numeric";
+      options.minute = "numeric";
+    }
+    
+    return localDate.toLocaleTimeString(undefined, options);
+  };
 
   // Format date for display - using the local timezone
   const formatDate = (date) => {
@@ -519,70 +760,6 @@ export default function TradePage() {
     };
     
     return localDate.toLocaleDateString(undefined, options);
-  };
-  
-  // Calculate Y-axis domain with proper padding
-  const calculateYAxisDomain = () => {
-    if (!priceHistory || priceHistory.length === 0) return ['auto', 'auto'];
-    
-    const allPrices = priceHistory.flatMap(entry => [
-      entry.price, entry.open, entry.high, entry.low, entry.close
-    ].filter(Boolean));
-    
-    // Ensure we have valid numbers
-    const validPrices = allPrices.filter(p => !isNaN(p));
-    if (validPrices.length === 0) return ['auto', 'auto'];
-    
-    const min = Math.min(...validPrices);
-    const max = Math.max(...validPrices);
-    
-    // Add padding (a bit more on top for price display)
-    const range = max - min;
-    const padding = range * 0.1;
-    
-    return [min - padding * 0.5, max + padding];
-  };
-
-  // Get chart color based on price trend
-  const getChartColor = () => {
-    if (!priceHistory || priceHistory.length < 2) {
-      return { stroke: "hsl(var(--primary))", fill: "hsl(var(--primary))", fillOpacity: 0.1 };
-    }
-    
-    const firstPrice = priceHistory[0].price;
-    const lastPrice = priceHistory[priceHistory.length - 1].price;
-    const isPositive = lastPrice >= firstPrice;
-    
-    return {
-      stroke: isPositive ? "hsl(142, 76%, 36%)" : "hsl(0, 84%, 60%)",
-      fill: isPositive ? "hsl(142, 76%, 36%)" : "hsl(0, 84%, 60%)",
-      fillOpacity: 0.1
-    };
-  };
-  
-  // Memoize the chart color calculation to prevent unnecessary re-renders
-  const chartColor = useMemo(() => getChartColor(), [priceHistory]);
-  
-  // Memoize the Y-axis domain calculation
-  const yAxisDomain = useMemo(() => calculateYAxisDomain(), [priceHistory]);
-  
-  // Create a stable identifier for the chart to prevent re-renders
-  const chartKey = useMemo(() => `chart-${timeRange}-${Date.now()}`, [timeRange]);
-  
-  // Simple static fake data for fallback
-  const generateStaticFakeData = () => {
-    const fakeData = [];
-    const basePrice = stock ? stock.last_price : 100;
-    
-    for (let i = 0; i < 24; i++) {
-      fakeData.push({
-        id: i,
-        price: basePrice * (1 + (Math.sin(i/5) * 0.05)),
-        fullDate: new Date(Date.now() - (24-i) * 3600000)
-      });
-    }
-    console.log("Generated static fake data:", fakeData);
-    return fakeData;
   };
   
   // Custom tooltip for the chart
@@ -613,18 +790,75 @@ export default function TradePage() {
     }
     return null;
   };
-
+  
+  // Get chart color based on price trend
+  const getChartColor = () => {
+    if (!filteredPriceHistory || filteredPriceHistory.length < 2) {
+      return { stroke: "hsl(var(--primary))", fill: "hsl(var(--primary))", fillOpacity: 0.1 };
+    }
+    
+    const firstPrice = filteredPriceHistory[0].price;
+    const lastPrice = filteredPriceHistory[filteredPriceHistory.length - 1].price;
+    const isPositive = lastPrice >= firstPrice;
+    
+    return {
+      stroke: isPositive ? "hsl(142, 76%, 36%)" : "hsl(0, 84%, 60%)",
+      fill: isPositive ? "hsl(142, 76%, 36%)" : "hsl(0, 84%, 60%)",
+      fillOpacity: 0.1
+    };
+  };
+  
+  // Memoize the chart color calculation to prevent unnecessary re-renders
+  const chartColor = useMemo(() => getChartColor(), [filteredPriceHistory]);
+  
+  // Memoize the Y-axis domain calculation
+  const yAxisDomain = useMemo(() => {
+    if (!filteredPriceHistory || filteredPriceHistory.length === 0) return ['auto', 'auto'];
+    
+    const allPrices = filteredPriceHistory.flatMap(entry => [
+      entry.price, entry.open, entry.high, entry.low, entry.close
+    ].filter(Boolean));
+    
+    // Ensure we have valid numbers
+    const validPrices = allPrices.filter(p => !isNaN(p));
+    if (validPrices.length === 0) return ['auto', 'auto'];
+    
+    const min = Math.min(...validPrices);
+    const max = Math.max(...validPrices);
+    
+    // Add padding (a bit more on top for price display)
+    const range = max - min;
+    const padding = range * 0.1;
+    
+    return [min - padding * 0.5, max + padding];
+  }, [filteredPriceHistory]);
+  
+  // Create a stable identifier for the chart
+  const chartKey = useMemo(() => `chart-${timeRange}-${chartUpdateTrigger}`, [timeRange, chartUpdateTrigger]);
+  
   // Render the price chart with memoization
   const renderPriceChart = useMemo(() => {
-    if (priceHistory.length === 0) return null;
+    // Skip rendering if no data or loading initial data
+    if (!filteredPriceHistory.length) return null;
+    
+    // Calculate Y axis domain once
+    const prices = filteredPriceHistory.map(p => p?.price).filter(Boolean);
+    const min = Math.min(...prices);
+    const max = Math.max(...prices);
+    const padding = (max - min) * 0.1;
+    const domain = [min - padding, max + padding];
+    
+    // Get appropriate X-axis ticks
+    const ticks = getAxisTicks(filteredPriceHistory.length);
     
     return (
       <LineChart
-        data={priceHistory}
+        key={chartKey}
+        data={filteredPriceHistory}
         margin={{
           top: 10,
           right: 30,
-          left: 10,
+          left: 10, 
           bottom: 30,
         }}
       >
@@ -632,29 +866,32 @@ export default function TradePage() {
         <XAxis 
           dataKey="id" 
           type="number"
-          domain={['dataMin', 'dataMax']}
           tickFormatter={(id) => {
-            const item = priceHistory.find(p => p.id === id);
-            return item && item.fullDate ? formatChartTime(item.fullDate) : '';
+            const item = filteredPriceHistory.find(p => p?.id === id);
+            return item?.fullDate ? formatChartTime(item.fullDate) : '';
           }}
+          domain={[0, filteredPriceHistory.length - 1]}
+          ticks={ticks}
         />
         <YAxis 
           orientation="right"
-          domain={yAxisDomain}
+          domain={domain}
           tickFormatter={(value) => formatCurrency(value, stock?.currency_code).replace(/[^\d.]/g, '')}
         />
         <Tooltip content={<CustomTooltip />} />
         <Line
-          type="monotone"
+          type="monotoneX"
           dataKey="price"
           stroke={chartColor.stroke}
           strokeWidth={2}
-          isAnimationActive={false}
           dot={false}
+          activeDot={{ r: 6, strokeWidth: 1, stroke: "#fff" }}
+          isAnimationActive={false}
+          connectNulls={true}
         />
       </LineChart>
     );
-  }, [priceHistory, formatChartTime, yAxisDomain, stock, chartColor]);
+  }, [filteredPriceHistory, chartKey, stock, chartColor]);
   
   if (initialLoading) {
     return (
@@ -714,51 +951,22 @@ export default function TradePage() {
                     )}
                     {marketTrend.positive ? '+' : '-'}{marketTrend.percent}%
                   </div>
-                  <div className="flex items-center space-x-1 rounded-md bg-muted p-1 text-xs">
-                    <button
-                      onClick={(e) => { 
-                        e.preventDefault();
-                        console.log("Setting timeRange to 5m");
-                        setTimeRange("5m");
-                      }}
-                      className={`rounded px-2 py-1 ${timeRange === "5m" ? "bg-background shadow-sm" : "hover:bg-background/50"}`}
-                      aria-pressed={timeRange === "5m"}
-                    >
-                      5M
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        console.log("Setting timeRange to 1h");
-                        setTimeRange("1h");
-                      }}
-                      className={`rounded px-2 py-1 ${timeRange === "1h" ? "bg-background shadow-sm" : "hover:bg-background/50"}`}
-                      aria-pressed={timeRange === "1h"}
-                    >
-                      1H
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        console.log("Setting timeRange to 1d");
-                        setTimeRange("1d");
-                      }}
-                      className={`rounded px-2 py-1 ${timeRange === "1d" ? "bg-background shadow-sm" : "hover:bg-background/50"}`}
-                      aria-pressed={timeRange === "1d"}
-                    >
-                      1D
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        console.log("Setting timeRange to 1M");
-                        setTimeRange("1M");
-                      }}
-                      className={`rounded px-2 py-1 ${timeRange === "1M" ? "bg-background shadow-sm" : "hover:bg-background/50"}`}
-                      aria-pressed={timeRange === "1M"}
-                    >
-                      1M
-                    </button>
+                  <div className="flex flex-col md:flex-row gap-2">
+                    <div className="flex space-x-2">
+                      {Object.entries(timeRangeOptions).map(([key, value]) => (
+                        <button
+                          key={key}
+                          onClick={() => handleTimeRangeChange(key)}
+                          className={`px-3 py-1 text-xs font-medium rounded-md ${
+                            timeRange === key
+                              ? "bg-indigo-600 text-white"
+                              : "bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300"
+                          }`}
+                        >
+                          {value.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </CardHeader>
@@ -783,31 +991,14 @@ export default function TradePage() {
                     {/* Price chart using Recharts - memoized to prevent flickering */}
                     <div className="h-full w-full">
                       <ResponsiveContainer width="100%" height="100%">
-                        {dataLoading ? (
+                        {initialLoading ? (
                           <div className="h-full w-full flex items-center justify-center">
                             <div className="h-6 w-6 animate-spin rounded-full border-b-2 border-primary"></div>
                           </div>
-                        ) : priceHistory.length === 0 ? (
-                          <LineChart
-                            data={generateStaticFakeData()}
-                            margin={{
-                              top: 10,
-                              right: 30,
-                              left: 10,
-                              bottom: 30,
-                            }}
-                          >
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="id" />
-                            <YAxis orientation="right" />
-                            <Line
-                              type="monotone"
-                              dataKey="price"
-                              stroke="hsl(var(--primary))"
-                              isAnimationActive={false}
-                              dot={false}
-                            />
-                          </LineChart>
+                        ) : filteredPriceHistory.length === 0 ? (
+                          <div className="h-full w-full flex flex-col items-center justify-center">
+                            <p className="text-muted-foreground">No data available for the selected time range</p>
+                          </div>
                         ) : renderPriceChart}
                       </ResponsiveContainer>
                     </div>

@@ -121,6 +121,15 @@ async function startServer() {
     res.json({ message: 'Stock Market API is running' });
   });
   
+  // Health check endpoint
+  app.get('/health', (req, res) => {
+    res.status(200).json({ 
+      status: 'ok',
+      message: 'Stock Market Server is running',
+      timestamp: new Date().toISOString()
+    });
+  });
+  
   // Get all stocks
   app.get('/api/stocks', (req, res) => {
     res.json(stockData.getStocks());

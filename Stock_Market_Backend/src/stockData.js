@@ -13,11 +13,11 @@ const pool = new Pool({
 // Stock data will be loaded from database
 let stocks = [];
 
-// Pending updates for batch processing
-let pendingUpdates = [];
+// Temporary storage for stock updates between batch inserts
+let tempStockUpdates = new Map();
 
 // Temporary storage for price history
-let priceHistoryBuffer = new Map();
+let tempPriceHistory = new Map();
 
 // Load stocks from database
 const loadStocksFromDatabase = async () => {
@@ -76,7 +76,7 @@ const getStocksByMarket = (market) => {
   return stocks.filter(stock => stock.market === market);
 };
 
-// Update stock prices with random movement
+// Update stock prices with random movement - now stores in temporary storage
 const updateStockPrices = () => {
   const updatedStocks = [];
 
@@ -109,14 +109,17 @@ const updateStockPrices = () => {
     stock.volume = newVolume;
     stock.updated_at = new Date();
     
-    // Add to pending updates for batch processing
-    pendingUpdates.push({...stock});
+    // Store in temporary map - only keep the latest update for each stock
+    tempStockUpdates.set(stock.stock_id, {...stock});
     
-    // Add to price history buffer
-    if (!priceHistoryBuffer.has(stock.stock_id)) {
-      priceHistoryBuffer.set(stock.stock_id, []);
+    // Store price in temporary history map
+    if (!tempPriceHistory.has(stock.stock_id)) {
+      tempPriceHistory.set(stock.stock_id, []);
     }
-    priceHistoryBuffer.get(stock.stock_id).push(roundedPrice);
+    tempPriceHistory.get(stock.stock_id).push({
+      price: roundedPrice,
+      timestamp: new Date()
+    });
     
     // Add to list of updated stocks to return
     updatedStocks.push(stock);
@@ -125,46 +128,34 @@ const updateStockPrices = () => {
   return updatedStocks;
 };
 
-// Save pending stock updates to database
+// Save all temporary data to database in a batch
 const savePendingUpdates = async () => {
-  if (pendingUpdates.length === 0 && priceHistoryBuffer.size === 0) {
-    return;
+  if (tempStockUpdates.size === 0 && tempPriceHistory.size === 0) {
+    return; // Don't log anything if there are no updates
+  }
+  
+  // Calculate total data points to be inserted
+  let totalPriceDataPoints = 0;
+  if (tempPriceHistory.size > 0) {
+    for (const pricePoints of tempPriceHistory.values()) {
+      totalPriceDataPoints += pricePoints.length;
+    }
   }
   
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     
-    // Process stock updates
-    if (pendingUpdates.length > 0) {
-      const updatesCount = pendingUpdates.length;
-      console.log(`Saving batch of ${updatesCount} stock updates to database`);
+    // Process stock updates in a batch
+    if (tempStockUpdates.size > 0) {
+      // Build a single query for all stock updates
+      const stockValues = [];
+      const stockParams = [];
+      let paramIndex = 1;
       
-      // Process each stock once (use Set to deduplicate)
-      const stocksToUpdate = Array.from(
-        new Map(pendingUpdates.map(stock => [stock.stock_id, stock])).values()
-      );
-      
-      for (const stock of stocksToUpdate) {
-        await client.query(`
-          INSERT INTO stocks (
-            stock_id, symbol, name, market, currency_code, last_price, 
-            change_percent, change_value, volume, previous_close, 
-            market_cap, day_high, day_low, updated_at
-          )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
-          ON CONFLICT (stock_id) 
-          DO UPDATE SET 
-            last_price = $6,
-            change_percent = $7,
-            change_value = $8,
-            volume = $9,
-            previous_close = $10,
-            market_cap = $11,
-            day_high = $12,
-            day_low = $13,
-            updated_at = NOW()
-        `, [
+      for (const stock of tempStockUpdates.values()) {
+        stockValues.push(`($${paramIndex}, $${paramIndex+1}, $${paramIndex+2}, $${paramIndex+3}, $${paramIndex+4}, $${paramIndex+5}, $${paramIndex+6}, $${paramIndex+7}, $${paramIndex+8}, $${paramIndex+9}, $${paramIndex+10}, $${paramIndex+11}, $${paramIndex+12}, NOW())`);
+        stockParams.push(
           stock.stock_id, 
           stock.symbol, 
           stock.name, 
@@ -178,40 +169,68 @@ const savePendingUpdates = async () => {
           stock.market_cap,
           stock.day_high,
           stock.day_low
-        ]);
+        );
+        paramIndex += 13;
       }
+      
+      // Execute batch update
+      await client.query(`
+        INSERT INTO stocks (
+          stock_id, symbol, name, market, currency_code, last_price, 
+          change_percent, change_value, volume, previous_close, 
+          market_cap, day_high, day_low, updated_at
+        )
+        VALUES ${stockValues.join(', ')}
+        ON CONFLICT (stock_id) 
+        DO UPDATE SET 
+          last_price = EXCLUDED.last_price,
+          change_percent = EXCLUDED.change_percent,
+          change_value = EXCLUDED.change_value,
+          volume = EXCLUDED.volume,
+          previous_close = EXCLUDED.previous_close,
+          market_cap = EXCLUDED.market_cap,
+          day_high = GREATEST(stocks.day_high, EXCLUDED.day_high),
+          day_low = LEAST(stocks.day_low, EXCLUDED.day_low),
+          updated_at = NOW()
+      `, stockParams);
+      
+      // Clear temp stock updates after saving
+      tempStockUpdates.clear();
     }
     
-    // Process price history updates
-    if (priceHistoryBuffer.size > 0) {
-      console.log(`Saving ${priceHistoryBuffer.size} stocks' price history to database`);
+    // Process price history in a batch
+    if (tempPriceHistory.size > 0) {
+      // Build a single query for all price history
+      const historyValues = [];
+      const historyParams = [];
+      let paramIndex = 1;
       
-      for (const [stockId, prices] of priceHistoryBuffer.entries()) {
-        // Save each individual price point instead of just the average
-        for (let i = 0; i < prices.length; i++) {
-          const price = prices[i];
-          // Calculate a timestamp slightly offset for each entry in the batch
-          // This ensures we maintain the correct order and don't have duplicate timestamps
-          const offsetSeconds = i * (60 / prices.length);
-          
-          await client.query(`
-            INSERT INTO stock_price_history (stock_id, price, timestamp)
-            VALUES ($1, $2, NOW() - INTERVAL '${offsetSeconds} seconds')
-          `, [stockId, price]);
+      for (const [stockId, pricePoints] of tempPriceHistory.entries()) {
+        for (const point of pricePoints) {
+          historyValues.push(`($${paramIndex}, $${paramIndex+1}, $${paramIndex+2})`);
+          historyParams.push(
+            stockId,
+            point.price,
+            point.timestamp
+          );
+          paramIndex += 3;
         }
-        
-        console.log(`Saved ${prices.length} data points for stock ${stockId}`);
       }
       
-      // Clear the buffer after saving
-      priceHistoryBuffer.clear();
+      // Execute batch insert of price history
+      await client.query(`
+        INSERT INTO stock_price_history (stock_id, price, timestamp)
+        VALUES ${historyValues.join(', ')}
+      `, historyParams);
+      
+      // Clear temp price history after saving
+      tempPriceHistory.clear();
     }
     
     await client.query('COMMIT');
-    console.log('Successfully saved updates to database');
     
-    // Clear pending updates after successful save
-    pendingUpdates = [];
+    // One consolidated log message showing all the data that was saved
+    console.log(`Database batch update: ${tempStockUpdates.size > 0 ? `${tempStockUpdates.size} stocks updated, ` : ''}${totalPriceDataPoints > 0 ? `${totalPriceDataPoints} price history points inserted` : ''}`);
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error saving batch to database:', error.message);

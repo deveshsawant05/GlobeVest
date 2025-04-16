@@ -192,10 +192,14 @@ async function startServer() {
     });
   });
   
-  // Start price updates at intervals
-  const PRICE_UPDATE_INTERVAL = 5000; // 5 seconds
-  const DB_UPDATE_INTERVAL = 60000; // 1 minute
+  // Configure intervals from environment variables or use defaults
+  const PRICE_UPDATE_INTERVAL = parseInt(process.env.PRICE_UPDATE_INTERVAL) || 5000; // 5 seconds
+  const DB_UPDATE_INTERVAL = parseInt(process.env.DB_UPDATE_INTERVAL) || 60000; // 1 minute
   
+  console.log(`Price updates will occur every ${PRICE_UPDATE_INTERVAL}ms`);
+  console.log(`Database batch updates will occur every ${DB_UPDATE_INTERVAL}ms`);
+  
+  // Update prices and store in temporary storage every 5 seconds
   setInterval(() => {
     const updatedStocks = stockData.updateStockPrices();
     
@@ -208,7 +212,7 @@ async function startServer() {
     });
   }, PRICE_UPDATE_INTERVAL);
   
-  // Save updates to database every minute
+  // Save all accumulated data to database in a batch every minute
   setInterval(() => {
     stockData.savePendingUpdates();
   }, DB_UPDATE_INTERVAL);

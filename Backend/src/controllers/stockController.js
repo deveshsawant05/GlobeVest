@@ -55,7 +55,26 @@ const getStocksByMarket = async (req, res) => {
     res.status(200).json(response.data);
   } catch (error) {
     logger.error(`Error retrieving stocks by market: ${error.message}`);
-    res.status(500).json({ message: 'Server error retrieving stocks' });
+    
+    // Provide more detailed error information
+    const statusCode = error.response?.status || 500;
+    const errorMessage = error.response?.data?.message || 'Server error retrieving stocks';
+    
+    // Log detailed error for debugging
+    if (error.response) {
+      logger.error(`Stock API response error: ${JSON.stringify({
+        status: error.response.status,
+        data: error.response.data,
+        headers: error.response.headers
+      })}`);
+    } else if (error.request) {
+      logger.error(`Stock API request error: ${error.request}`);
+    }
+    
+    res.status(statusCode).json({ 
+      message: errorMessage,
+      error: error.message
+    });
   }
 };
 

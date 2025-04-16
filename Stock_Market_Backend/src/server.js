@@ -20,8 +20,9 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-    methods: ['GET', 'POST']
+    origin: [process.env.FRONTEND_URL || 'http://localhost:3000'],
+    methods: ['GET', 'POST'],
+    credentials: true
   }
 });
 
@@ -112,7 +113,8 @@ async function startServer() {
   
   // Middleware
   app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000'
+    origin: [process.env.FRONTEND_URL || 'http://localhost:3000'],
+    credentials: true
   }));
   app.use(express.json());
   
@@ -146,6 +148,12 @@ async function startServer() {
   
   // Get stocks by market
   app.get('/api/markets/:market', (req, res) => {
+    const stocks = stockData.getStocksByMarket(req.params.market);
+    res.json(stocks);
+  });
+  
+  // Add a duplicate route with the correct path that matches the main Backend's expectations
+  app.get('/api/stocks/markets/:market', (req, res) => {
     const stocks = stockData.getStocksByMarket(req.params.market);
     res.json(stocks);
   });

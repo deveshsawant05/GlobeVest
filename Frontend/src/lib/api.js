@@ -5,7 +5,9 @@ const api = axios.create({
   baseURL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000/api',
   headers: {
     'Content-Type': 'application/json'
-  }
+  },
+  withCredentials: true,
+  timeout: 10000
 });
 
 // Request interceptor for adding auth token to requests
@@ -105,12 +107,53 @@ export const WalletAPI = {
 // Stocks API
 export const StocksAPI = {
   getAllStocks: () => api.get('/stocks'),
-  getStockById: (stockId) => api.get(`/stocks/${stockId}`),
-  getStocksByMarket: (market) => api.get(`/stocks/markets/${market}`),
+  
+  getStockById: (stockId) => {
+    console.log(`Fetching stock data for ID: ${stockId}`);
+    return api.get(`/stocks/${stockId}`)
+      .catch(error => {
+        console.error(`Error fetching stock ${stockId}:`, error.message);
+        throw error;
+      });
+  },
+  
+  getStocksByMarket: (market) => {
+    console.log(`Fetching stocks for market: ${market}`);
+    return api.get(`/stocks/markets/${market}`)
+      .catch(error => {
+        console.error(`Error fetching stocks for market ${market}:`, error.message);
+        throw error;
+      });
+  },
+  
   getUserPortfolio: () => api.get('/stocks/user/portfolio'),
-  updateStockPrices: () => api.post('/stocks/update-prices'),
-  seedStockData: () => api.post('/stocks/seed'),
-  getStockHistory: (stockId, range = '1d') => api.get(`/stocks/${stockId}/history?range=${range}`)
+  
+  updateStockPrices: () => {
+    console.log('Requesting stock price update');
+    return api.post('/stocks/update-prices')
+      .catch(error => {
+        console.error('Error updating stock prices:', error.message);
+        throw error;
+      });
+  },
+  
+  seedStockData: () => {
+    console.log('Requesting stock data seeding');
+    return api.post('/stocks/seed')
+      .catch(error => {
+        console.error('Error seeding stock data:', error.message);
+        throw error;
+      });
+  },
+  
+  getStockHistory: (stockId, range = '1d') => {
+    console.log(`Fetching price history for stock ${stockId} with range ${range}`);
+    return api.get(`/stocks/${stockId}/history?range=${range}`)
+      .catch(error => {
+        console.error(`Error fetching stock history for ${stockId}:`, error.message);
+        throw error;
+      });
+  }
 };
 
 // Trades API

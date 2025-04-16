@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast";
 import { TrendingUp, TrendingDown, ArrowDown, ArrowUp } from "lucide-react";
 import { StocksAPI, WalletAPI, TradesAPI } from "@/lib/api";
 import { useSocket } from "@/hooks/use-socket";
+import { convertUTCToLocal, formatTimestamp } from "@/lib/utils";
 import { 
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend, BarChart, Bar, ReferenceLine,
@@ -30,7 +31,7 @@ export default function TradePage() {
   const { stockId } = useParams();
   const router = useRouter();
   const { toast } = useToast();
-  const socket = useSocket('ws://localhost:5001');
+  const socket = useSocket(process.env.NEXT_PUBLIC_STOCK_MARKET_URL);
   
   // State variables
   const [stock, setStock] = useState(null);
@@ -112,46 +113,29 @@ export default function TradePage() {
       setDataLoading(true); // Use dataLoading instead of initialLoading
       const config = timeRangeOptions[range];
       
-      // Calculate the start time based on the selected range
-      const now = new Date();
-      let startTime;
-      
-      switch(range) {
-        case "5m":
-          startTime = new Date(now.getTime() - (5 * 60 * 1000));
-          break;
-        case "1h":
-          startTime = new Date(now.getTime() - (60 * 60 * 1000));
-          break;
-        case "1d":
-          startTime = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-          break;
-        case "1M":
-          startTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
-          break;
-        default:
-          startTime = new Date(now.getTime() - (24 * 60 * 60 * 1000)); // Default to 1 day
-      }
-      
       // Try to fetch from the backend API
       const response = await StocksAPI.getStockHistory(stockId, range);
       
       if (response.data && response.data.length > 0) {
+        console.log("Received actual price history data from backend:", response.data);
+        
         // Format the data for the chart
         const formattedData = response.data.map((point, index) => {
-          const pointDate = new Date(point.timestamp);
+          // Convert UTC timestamp to local time
+          const utcTimestamp = point.timestamp;
+          const localDate = new Date(utcTimestamp);
+          
           return {
-            date: pointDate.toLocaleDateString(),
-            time: pointDate.toLocaleTimeString(),
-            fullDate: pointDate,
+            id: index,
+            date: localDate.toLocaleDateString(),
+            time: localDate.toLocaleTimeString(),
+            fullDate: localDate, // Store the local date object
             price: parseFloat(point.price),
             open: parseFloat(point.open || point.price),
             high: parseFloat(point.high || point.price * 1.005),
             low: parseFloat(point.low || point.price * 0.995),
-            close: parseFloat(point.price),
-            volume: point.volume || Math.floor(Math.random() * 10000) + 1000,
-            // Ensure each point has a unique id
-            id: index
+            close: parseFloat(point.close || point.price),
+            volume: point.volume || Math.floor(Math.random() * 10000) + 1000
           };
         });
         
@@ -159,17 +143,16 @@ export default function TradePage() {
         setPriceHistory(formattedData);
         priceHistoryRef.current = formattedData;
       } else {
-        // If no data, generate realistic mock data
-        generateStockData(stock.last_price, config.dataPoints, config.interval, startTime);
+        console.warn("No price history data received from backend, falling back to mock data");
+        generateStockData(stock.last_price, config.dataPoints, config.interval);
       }
       setDataLoading(false);
     } catch (error) {
       console.error("Error fetching price history:", error);
-      // Fallback to generated data
+      // Fallback to generated data in case of error
       const config = timeRangeOptions[range];
-      const now = new Date();
-      let startTime = new Date(now.getTime() - (config.dataPoints * config.interval));
-      generateStockData(stock.last_price, config.dataPoints, config.interval, startTime);
+      console.warn("Error getting data from backend, falling back to mock data");
+      generateStockData(stock.last_price, config.dataPoints, config.interval);
       setDataLoading(false);
     }
   }, [stockId, stock]);
@@ -185,77 +168,135 @@ export default function TradePage() {
   useEffect(() => {
     if (!stockId || !socket) return;
     
+    console.log("Setting up WebSocket connection for stock:", stockId);
+    
     // Subscribe to stock updates
     socket.emit('subscribeToStock', stockId);
     
     // Handler for stock updates
     const handleStockUpdate = (updatedStock) => {
-      setStock(prevStock => {
-        if (!prevStock) return updatedStock;
-        
-        // Only append a new price point if the price actually changed
-        if (prevStock.last_price !== updatedStock.last_price) {
-          appendPricePoint(updatedStock.last_price);
-        }
-        
-        return updatedStock;
+      console.log("Received real-time stock update:", updatedStock);
+      
+      if (updatedStock && updatedStock.stock_id === stockId) {
+        setStock(prevStock => {
+          if (!prevStock) return updatedStock;
+          
+          // Only append a new price point if the price actually changed
+          if (prevStock.last_price !== updatedStock.last_price) {
+            console.log(`Price changed from ${prevStock.last_price} to ${updatedStock.last_price}`);
+            appendPricePoint(updatedStock.last_price);
+          }
+          
+          return {
+            ...prevStock,
+            ...updatedStock,
+            // Ensure we keep the change percentage if it's not in the update
+            change_percentage: updatedStock.change_percentage ?? prevStock.change_percentage
+          };
+        });
+      }
+    };
+    
+    // Set up event listeners for stock updates
+    socket.on('stockUpdate', handleStockUpdate);
+    socket.on('stockPriceUpdate', handleStockUpdate);
+    
+    // Handle connection events
+    const handleConnect = () => {
+      console.log("WebSocket connected, resubscribing to:", stockId);
+      socket.emit('subscribeToStock', stockId);
+    };
+    
+    const handleError = (error) => {
+      console.error("WebSocket error:", error);
+      toast({
+        variant: "destructive",
+        title: "Connection Error",
+        description: "Lost connection to live market data",
       });
     };
     
-    // Set up event listener for stock updates
-    socket.on('stockUpdate', handleStockUpdate);
+    socket.on('connect', handleConnect);
+    socket.on('error', handleError);
     
-    // Cleanup subscription
+    // Cleanup subscriptions
     return () => {
+      console.log("Cleaning up WebSocket subscriptions");
       socket.off('stockUpdate', handleStockUpdate);
+      socket.off('stockPriceUpdate', handleStockUpdate);
+      socket.off('connect', handleConnect);
+      socket.off('error', handleError);
       socket.emit('unsubscribeFromStock', stockId);
     };
-  }, [stockId, socket]);
+  }, [stockId, socket, toast]);
   
-  // Append a new price point to the existing history
+  // Append a new price point to the chart data
   const appendPricePoint = (newPrice) => {
-    setPriceHistory(prev => {
-      if (prev.length === 0) return prev;
-      
-      // Create a copy of the last entry
-      const lastPoint = { ...prev[prev.length - 1] };
-      const now = new Date();
-      
-      // Create a new point
-      const newPoint = {
+    // Skip if there's no history data yet
+    if (!priceHistoryRef.current || priceHistoryRef.current.length === 0) {
+      console.log("No existing price history to append to, skipping update");
+      return;
+    }
+    
+    const currentTime = new Date(); // Current time in local timezone
+    const lastPoint = priceHistoryRef.current[priceHistoryRef.current.length - 1];
+    const lastTime = lastPoint.fullDate;
+    
+    console.log(`Checking if should add new data point: lastTime=${lastTime.toISOString()}, currentTime=${currentTime.toISOString()}, timeRange=${timeRange}`);
+    
+    // Only add a new point if enough time has passed based on the selected range
+    // or if it's the first update after switching ranges
+    if (!shouldAddNewDataPoint(lastTime, currentTime, timeRange)) {
+      console.log("Updating last point price instead of adding new point");
+      // Just update the last point's price if we're not adding a new point
+      const updatedHistory = [...priceHistoryRef.current];
+      updatedHistory[updatedHistory.length - 1] = {
         ...lastPoint,
-        fullDate: now,
-        date: now.toLocaleDateString(),
-        time: now.toLocaleTimeString(),
-        price: parseFloat(newPrice),
-        close: parseFloat(newPrice),
+        price: newPrice,
+        close: newPrice,
         // Update high/low if needed
-        high: Math.max(lastPoint.high, parseFloat(newPrice)),
-        low: Math.min(lastPoint.low, parseFloat(newPrice)),
-        // Generate a volume that correlates with price change
-        volume: Math.floor(Math.random() * 5000) + 500,
-        id: Date.now() // Add unique ID for each point
+        high: Math.max(lastPoint.high, newPrice),
+        low: Math.min(lastPoint.low, newPrice)
       };
       
-      // If we're in a timeframe where we should add a new point
-      const shouldAddNewPoint = shouldAddNewDataPoint(lastPoint.fullDate, now, timeRange);
-      
-      if (shouldAddNewPoint) {
-        // Add as new point
-        const newHistory = [...prev, newPoint];
-        // If history is too long, remove oldest points
-        if (newHistory.length > 100) {
-          return newHistory.slice(newHistory.length - 100);
-        }
-        priceHistoryRef.current = newHistory;
-        return newHistory;
-      } else {
-        // Update the last point
-        const newHistory = [...prev.slice(0, -1), newPoint];
-        priceHistoryRef.current = newHistory;
-        return newHistory;
-      }
+      setPriceHistory(updatedHistory);
+      priceHistoryRef.current = updatedHistory;
+      return;
+    }
+    
+    console.log("Adding new price point:", newPrice);
+    
+    // Add a new data point with the new price
+    const newPoint = {
+      id: lastPoint.id + 1,
+      date: currentTime.toLocaleDateString(),
+      time: currentTime.toLocaleTimeString(),
+      fullDate: currentTime,
+      price: newPrice,
+      open: lastPoint.close,
+      high: Math.max(lastPoint.close, newPrice),
+      low: Math.min(lastPoint.close, newPrice),
+      close: newPrice,
+      volume: Math.floor(lastPoint.volume * (0.8 + Math.random() * 0.4))
+    };
+    
+    // Add the new point to the history
+    const updatedHistory = [...priceHistoryRef.current, newPoint];
+    
+    // Remove oldest point if we're at the limit for the current time range
+    if (updatedHistory.length > timeRangeOptions[timeRange].dataPoints) {
+      console.log("Removing oldest point to maintain chart size");
+      updatedHistory.shift();
+    }
+    
+    // Update the IDs to be sequential
+    updatedHistory.forEach((point, index) => {
+      point.id = index;
     });
+    
+    console.log(`Chart now has ${updatedHistory.length} points`);
+    setPriceHistory(updatedHistory);
+    priceHistoryRef.current = updatedHistory;
   };
   
   // Determine if we should add a new data point based on timeframe
@@ -278,91 +319,59 @@ export default function TradePage() {
     }
   };
   
-  // Generate realistic stock data for the chart
-  const generateStockData = (currentPrice, numPoints, interval, startTime) => {
-    // Base price and volatility
-    const basePrice = currentPrice;
-    const volatility = timeRange === "5m" ? 0.0005 : 
-                       timeRange === "1h" ? 0.001 : 
-                       timeRange === "1d" ? 0.003 : 0.01;
+  // Generate realistic stock price history data
+  const generateStockData = (currentPrice, numPoints, interval) => {
+    console.log("Generating mock price history data as fallback");
     
-    // Generate realistic stock movement with proper OHLC data
+    // Ensure we have a valid startTime in local time zone
     const now = new Date();
-    const endTime = new Date(now);
+    const localStartTime = new Date(now.getTime() - (numPoints * interval));
     
-    // Use provided startTime or calculate based on selected time range
-    if (!startTime) {
-      switch(timeRange) {
-        case "5m":
-          startTime = new Date(now.getTime() - (5 * 60 * 1000));
-          break;
-        case "1h":
-          startTime = new Date(now.getTime() - (60 * 60 * 1000));
-          break;
-        case "1d":
-          startTime = new Date(now.getTime() - (24 * 60 * 60 * 1000));
-          break;
-        case "1M":
-          startTime = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
-          break;
-        default:
-          startTime = new Date(endTime.getTime() - (numPoints * interval));
-      }
-    }
-    
-    console.log(`Generating mock data: ${timeRange} from ${startTime.toISOString()} to ${endTime.toISOString()}`);
-    
-    // Calculate the time step between each point
-    const timeSpan = endTime.getTime() - startTime.getTime();
-    const timeStep = timeSpan / (numPoints - 1);
-    
-    let lastPrice = basePrice;
+    const volatility = 0.015; // 1.5% volatility
+    let lastPrice = currentPrice;
+    const trend = 0.0001; // Very slight upward trend
     const data = [];
     
     for (let i = 0; i < numPoints; i++) {
-      // Calculate precise time for this point
-      const pointTime = new Date(startTime.getTime() + (i * timeStep));
+      // Calculate time for this data point in local time
+      const pointTime = new Date(localStartTime.getTime() + (i * interval));
       
-      // Generate price movement
-      const change = (Math.random() - 0.5) * volatility * lastPrice;
-      const newPrice = lastPrice + change;
+      // Simulate price movement with some randomness and trend
+      const change = lastPrice * (Math.random() * volatility * 2 - volatility + trend);
+      const newPrice = Math.max(lastPrice + change, 0.01);
       
-      // Generate OHLC data with more variation
-      const open = lastPrice;
-      const close = newPrice;
-      const high = Math.max(open, close) + (Math.random() * volatility * lastPrice * 0.5);
-      const low = Math.min(open, close) - (Math.random() * volatility * lastPrice * 0.5);
+      // Add some extra volatility at certain times
+      const timeMultiplier = Math.sin((pointTime.getHours() / 24) * Math.PI) * 0.5 + 0.5;
+      const adjustedPrice = newPrice * (1 + (Math.random() * 0.01 - 0.005) * timeMultiplier);
       
-      // For volume, higher volatility = higher volume
-      const priceChange = Math.abs(close - open);
-      const volumeMultiplier = 1 + (priceChange / open) * 50;
-      const volume = Math.floor((Math.random() * 5000 + 1000) * volumeMultiplier);
+      const roundedPrice = parseFloat(adjustedPrice.toFixed(2));
+      lastPrice = roundedPrice;
       
-      // Add the data point
+      // Calculate open, high, low, close values for candlestick charts
+      const open = parseFloat((roundedPrice * (1 + (Math.random() * 0.01 - 0.005))).toFixed(2));
+      const close = roundedPrice;
+      const high = parseFloat(Math.max(open, close) * (1 + Math.random() * 0.005).toFixed(2));
+      const low = parseFloat(Math.min(open, close) * (1 - Math.random() * 0.005).toFixed(2));
+      
+      // Add volume with some randomness
+      const volume = Math.floor(50000 + Math.random() * 1000000);
+      
       data.push({
-        fullDate: pointTime,
+        id: i,
         date: pointTime.toLocaleDateString(),
         time: pointTime.toLocaleTimeString(),
-        price: parseFloat(close.toFixed(2)),
-        open: parseFloat(open.toFixed(2)), 
-        high: parseFloat(high.toFixed(2)),
-        low: parseFloat(low.toFixed(2)),
-        close: parseFloat(close.toFixed(2)),
-        volume: volume,
-        // Use numeric index as ID to avoid issues with date keys
-        id: i
+        fullDate: pointTime,
+        price: roundedPrice,
+        open,
+        high,
+        low,
+        close,
+        volume
       });
-      
-      lastPrice = close;
     }
     
-    // Make sure the last price matches the current price
-    if (data.length > 0) {
-      data[data.length - 1].close = currentPrice;
-      data[data.length - 1].price = currentPrice;
-    }
+    console.log("Generated mock data with " + data.length + " points");
     
-    console.log("Generated chart data:", data);
     setPriceHistory(data);
     priceHistoryRef.current = data;
   };
@@ -477,17 +486,39 @@ export default function TradePage() {
     }
   };
   
-  // Format date for display
+  // Format time based on selected time range - memoized to prevent re-rendering
+  const formatChartTime = useCallback((timestamp) => {
+    if (!timestamp) return "";
+    // Convert the UTC timestamp to local time
+    const localDate = convertUTCToLocal(timestamp);
+    
+    switch(timeRange) {
+      case "5m":
+        return localDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      case "1h":
+        return localDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      case "1d":
+        return localDate.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+      case "1M":
+      default:
+        return localDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    }
+  }, [timeRange]);
+
+  // Format date for display - using the local timezone
   const formatDate = (date) => {
     if (!date) return "";
+    
+    // Convert UTC to local time
+    const localDate = convertUTCToLocal(date);
     
     const options = { 
       month: 'short', 
       day: 'numeric',
-      year: date.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined
+      year: localDate.getFullYear() !== new Date().getFullYear() ? 'numeric' : undefined
     };
     
-    return date.toLocaleDateString(undefined, options);
+    return localDate.toLocaleDateString(undefined, options);
   };
   
   // Calculate Y-axis domain with proper padding
@@ -528,24 +559,6 @@ export default function TradePage() {
       fillOpacity: 0.1
     };
   };
-  
-  // Format time based on selected time range - memoized to prevent re-rendering
-  const formatChartTime = useCallback((timestamp) => {
-    if (!timestamp) return "";
-    const date = new Date(timestamp);
-    
-    switch(timeRange) {
-      case "5m":
-        return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      case "1h":
-        return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-      case "1d":
-        return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-      case "1M":
-      default:
-        return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    }
-  }, [timeRange]);
   
   // Memoize the chart color calculation to prevent unnecessary re-renders
   const chartColor = useMemo(() => getChartColor(), [priceHistory]);

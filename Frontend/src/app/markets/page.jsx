@@ -29,10 +29,8 @@ export default function MarketsPage() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const subscribedStocksRef = useRef(new Set());
-  
   // Setup websocket connection for real-time price updates
-  const socket = useSocket('ws://localhost:5001');
-  
+  const socket = useSocket(process.env.NEXT_PUBLIC_STOCK_MARKET_URL);
   // Listen for real-time stock updates
   useEffect(() => {
     if (!socket) return;

@@ -213,19 +213,6 @@ export default function DashboardPage() {
                         <span>{formatCurrency(totalPortfolioValue, selectedCurrency)}</span>
                       </div>
                     </div>
-                    
-                    <div className="grid grid-cols-2 gap-2 mt-2">
-                      {wallets.map(wallet => (
-                        <div 
-                          key={wallet.wallet_id} 
-                          className={`h-1.5 rounded-full ${wallet.is_master ? 'bg-primary' : 'bg-muted'}`}
-                          style={{ 
-                            width: `${(parseFloat(wallet.balance) / totalPortfolioValue * 100)}%`,
-                            minWidth: '4px'
-                          }}
-                        />
-                      ))}
-                    </div>
                   </div>
                 ) : (
                   <div className="flex h-full items-center justify-center">

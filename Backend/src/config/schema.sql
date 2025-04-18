@@ -81,15 +81,3 @@ CREATE TABLE IF NOT EXISTS exchange_rates (
     UNIQUE (from_currency, to_currency)
 );
 
--- Insert some initial exchange rates for common currencies
-INSERT INTO exchange_rates (from_currency, to_currency, rate) 
-VALUES
-    ('USD', 'EUR', 0.85),
-    ('USD', 'GBP', 0.75),
-    ('USD', 'JPY', 120.0),
-    ('USD', 'INR', 75.0),
-    ('EUR', 'USD', 1.18),
-    ('GBP', 'USD', 1.33),
-    ('JPY', 'USD', 0.0083),
-    ('INR', 'USD', 0.013)
-ON CONFLICT (from_currency, to_currency) DO NOTHING;

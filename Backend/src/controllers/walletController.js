@@ -416,68 +416,32 @@ const exchangeCurrency = async (req, res) => {
   }
 };
 
-// Get wallet balance total across all currencies
+// Get user's total balance across all wallets
 const getTotalBalance = async (req, res) => {
-  const userId = req.user.user_id;
-  
   try {
-    logger.info(`Calculating total wallet value for user ID: ${userId}`);
+    const userId = req.user.user_id;
+    const selectedCurrency = req.query.currency;
     
-    // First check if exchange_rates table exists
-    const tableCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'exchange_rates'
-      )
-    `);
-    
-    const exchangeRatesExist = tableCheck.rows[0].exists;
-    
-    if (!exchangeRatesExist) {
-      // If exchange_rates table doesn't exist, just sum up the wallet balances without conversion
-      logger.warn('Exchange rates table not found, calculating without conversions');
-      const simpleResult = await pool.query(`
-        SELECT SUM(balance) as total_balance 
-        FROM wallets 
-        WHERE user_id = $1
-      `, [userId]);
-      
-      const totalBalance = simpleResult.rows[0]?.total_balance || 0;
-      logger.debug(`Total wallet value (without conversion): ${totalBalance}`);
-      return res.status(200).json({ totalBalance });
-    }
-    
-    // Otherwise, use the conversion query 
+    // First, get the user's master wallet to determine the base currency if no currency specified
     const masterWalletResult = await pool.query(walletQueries.GET_MASTER_WALLET, [userId]);
-    const baseCurrency = masterWalletResult.rows.length > 0 
-      ? masterWalletResult.rows[0].currency_code 
-      : 'USD';
     
-    const result = await pool.query(walletQueries.GET_TOTAL_WALLET_VALUE, [userId, baseCurrency]);
-    const totalBalance = result.rows[0]?.total_balance || 0;
-    
-    logger.debug(`Total wallet value: ${totalBalance}`);
-    res.status(200).json({ totalBalance });
-  } catch (error) {
-    logger.error(`Error calculating total wallet value: ${error.message}`);
-    // Return a fallback value of the current wallet balance without conversion
-    try {
-      const fallbackResult = await pool.query(`
-        SELECT SUM(balance) as total_balance 
-        FROM wallets 
-        WHERE user_id = $1
-      `, [userId]);
-      
-      const totalBalance = fallbackResult.rows[0]?.total_balance || 0;
-      logger.warn(`Falling back to simple sum: ${totalBalance}`);
-      res.status(200).json({ totalBalance });
-    } catch (fallbackError) {
-      res.status(500).json({ 
-        message: 'Server error calculating total wallet value',
-        totalBalance: 0
-      });
+    if (masterWalletResult.rows.length === 0) {
+      return res.status(404).json({ message: "Master wallet not found" });
     }
+    
+    const masterWallet = masterWalletResult.rows[0];
+    const baseCurrency = selectedCurrency || masterWallet.currency_code;
+    
+    // Get the total value across all wallets converted to the chosen currency
+    const totalResult = await pool.query(walletQueries.GET_TOTAL_WALLET_VALUE, [userId, baseCurrency]);
+    
+    res.json({
+      totalBalance: parseFloat(totalResult.rows[0]?.total_balance || 0),
+      currency: baseCurrency
+    });
+  } catch (error) {
+    logger.error(`Error getting total balance: ${error.message}`);
+    res.status(500).json({ message: "Error getting total balance" });
   }
 };
 

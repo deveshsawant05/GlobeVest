@@ -23,11 +23,17 @@ const calculateTokenExpiry = (tokenType) => {
 
 // **REGISTER**
 const register = async (req, res) => {
-  const { name, email, password, baseCurrency = 'USD' } = req.body;
+  const { name, email, password, baseCurrency } = req.body;
 
   if (!name || !email || !password) {
     logger.warn('Registration attempt with missing fields');
     return res.status(400).json({ message: "All fields are required" });
+  }
+
+  // Validate password length
+  if (password.length < 8) {
+    logger.warn('Registration attempt with password less than 8 characters');
+    return res.status(400).json({ message: "Password must be at least 8 characters long" });
   }
 
   // Start a database transaction
@@ -55,19 +61,9 @@ const register = async (req, res) => {
     // Create base currency wallet (master wallet)
     await client.query(
       walletQueries.CREATE_WALLET,
-      [userId, baseCurrency, 10000] // Starting with 10,000 in base currency for demo
+      [userId, baseCurrency, 10000, true] // Starting with 10,000 in base currency for demo
     );
     logger.debug(`Created master wallet with currency: ${baseCurrency}`);
-    
-    // Create a couple of foreign currency wallets for demo
-    const additionalCurrencies = ['EUR', 'JPY', 'GBP'].filter(curr => curr !== baseCurrency);
-    for (const currency of additionalCurrencies.slice(0, 2)) {
-      await client.query(
-        walletQueries.CREATE_WALLET,
-        [userId, currency, 0] // Start with zero balance in foreign currencies
-      );
-      logger.debug(`Created additional wallet with currency: ${currency}`);
-    }
     
     await client.query('COMMIT');
     logger.info(`User registered successfully: ${email}`);

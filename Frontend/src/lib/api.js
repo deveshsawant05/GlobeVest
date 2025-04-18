@@ -10,6 +10,9 @@ const api = axios.create({
   timeout: 10000
 });
 
+// Stock market WebSocket URL
+export const STOCK_MARKET_WS_URL = process.env.NEXT_PUBLIC_STOCK_MARKET_URL || 'http://localhost:5001';
+
 // Request interceptor for adding auth token to requests
 api.interceptors.request.use(
   (config) => {

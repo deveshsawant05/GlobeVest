@@ -65,7 +65,7 @@ export default function TradePage() {
     "1d": { label: "1 Day", timeMs: 24 * 60 * 60 * 1000, interval: 30 },
     "1mo": { label: "1 Month", timeMs: 30 * 24 * 60 * 60 * 1000, interval: 60 * 12 }
   };
-
+  
   // State variables
   const [stock, setStock] = useState(null);
   const [wallets, setWallets] = useState([]);
@@ -300,7 +300,7 @@ export default function TradePage() {
     // Trigger a chart update
     setChartUpdateTrigger(prev => prev + 1);
   };
-
+  
   // Main data fetching function
   const fetchData = async () => {
     try {
@@ -326,30 +326,30 @@ export default function TradePage() {
       try {
         // Use a larger timeframe (1M) to have data for all time ranges
         const response = await StocksAPI.getStockHistory(stockId, "1M");
-        
-        if (response.data && response.data.length > 0) {
+      
+      if (response.data && response.data.length > 0) {
           console.log("Received historical price data points:", response.data.length);
+        
+        // Format the data for the chart
+        const formattedData = response.data.map((point, index) => {
+          // Convert UTC timestamp to local time
+          const utcTimestamp = point.timestamp;
+          const localDate = new Date(utcTimestamp);
           
-          // Format the data for the chart
-          const formattedData = response.data.map((point, index) => {
-            // Convert UTC timestamp to local time
-            const utcTimestamp = point.timestamp;
-            const localDate = new Date(utcTimestamp);
-            
-            return {
-              id: index,
-              date: localDate.toLocaleDateString(),
-              time: localDate.toLocaleTimeString(),
-              fullDate: localDate, // Store the local date object
-              price: parseFloat(point.price),
-              open: parseFloat(point.open || point.price),
-              high: parseFloat(point.high || point.price * 1.005),
-              low: parseFloat(point.low || point.price * 0.995),
-              close: parseFloat(point.close || point.price),
-              volume: point.volume || Math.floor(Math.random() * 10000) + 1000
-            };
-          });
-          
+          return {
+            id: index,
+            date: localDate.toLocaleDateString(),
+            time: localDate.toLocaleTimeString(),
+            fullDate: localDate, // Store the local date object
+            price: parseFloat(point.price),
+            open: parseFloat(point.open || point.price),
+            high: parseFloat(point.high || point.price * 1.005),
+            low: parseFloat(point.low || point.price * 0.995),
+            close: parseFloat(point.close || point.price),
+            volume: point.volume || Math.floor(Math.random() * 10000) + 1000
+          };
+        });
+        
           // Sort chronologically from oldest to newest
           formattedData.sort((a, b) => a.fullDate.getTime() - b.fullDate.getTime());
           
@@ -358,12 +358,12 @@ export default function TradePage() {
           
           // Trigger initial render
           setChartUpdateTrigger(prev => prev + 1);
-        } else {
+      } else {
           // Fallback to generated data if API returns empty
           console.warn("No historical data received from API, falling back to generated data");
           generateInitialData(stockResponse.data.last_price);
-        }
-      } catch (error) {
+      }
+    } catch (error) {
         console.error("Error fetching historical data:", error);
         generateInitialData(stockResponse.data.last_price);
       }
@@ -384,7 +384,7 @@ export default function TradePage() {
   // Effect for websocket connection and data handling
   useEffect(() => {
     if (!stock || !socket) return;
-
+    
     console.log(`Setting up real-time stock updates for ${stock.name} (${stock.stock_id})`);
     
     // Subscribe to specific stock updates
@@ -835,7 +835,7 @@ export default function TradePage() {
   
   // Create a stable identifier for the chart
   const chartKey = useMemo(() => `chart-${timeRange}-${chartUpdateTrigger}`, [timeRange, chartUpdateTrigger]);
-  
+
   // Render the price chart with memoization
   const renderPriceChart = useMemo(() => {
     // Skip rendering if no data or loading initial data
@@ -858,7 +858,7 @@ export default function TradePage() {
         margin={{
           top: 10,
           right: 30,
-          left: 10, 
+          left: 10,
           bottom: 30,
         }}
       >
@@ -954,7 +954,7 @@ export default function TradePage() {
                   <div className="flex flex-col md:flex-row gap-2">
                     <div className="flex space-x-2">
                       {Object.entries(timeRangeOptions).map(([key, value]) => (
-                        <button
+                    <button
                           key={key}
                           onClick={() => handleTimeRangeChange(key)}
                           className={`px-3 py-1 text-xs font-medium rounded-md ${
@@ -964,7 +964,7 @@ export default function TradePage() {
                           }`}
                         >
                           {value.label}
-                        </button>
+                    </button>
                       ))}
                     </div>
                   </div>

@@ -81,8 +81,9 @@ const updateStockPrices = () => {
   const updatedStocks = [];
 
   stocks.forEach(stock => {
-    // Random price movement between -2% and +2%
-    const priceChange = stock.last_price * (Math.random() * 0.04 - 0.02);
+    // Random price movement between -0.5% and +1% for a 5-second interval
+    // Adjusted volatility for more realistic 5-second price movements
+    const priceChange = stock.last_price * ((Math.random() * 1.5 - 0.5) / 100);
     
     // Ensure price doesn't go below 0.01
     const newPrice = Math.max(stock.last_price + priceChange, 0.01);

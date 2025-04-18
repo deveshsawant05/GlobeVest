@@ -5,8 +5,8 @@ import { DashboardLayout } from "@/components/dashboard-layout";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/utils";
 import { ArrowDownIcon, ArrowUpIcon, DollarSign, Wallet } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
-import { WalletAPI, TransactionsAPI } from "@/lib/api";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
+import { WalletAPI, TransactionsAPI, TradesAPI } from "@/lib/api";
 
 export default function DashboardPage() {
   const [selectedCurrency, setSelectedCurrency] = useState("USD");
@@ -29,9 +29,27 @@ export default function DashboardPage() {
         const portfolioResponse = await WalletAPI.getTotalBalance(selectedCurrency);
         setTotalPortfolioValue(portfolioResponse.data.totalBalance);
         
-        // Fetch recent transactions
+        // Fetch recent transactions and trades
         const transactionsResponse = await TransactionsAPI.getUserTransactions(1, 5);
-        setRecentTransactions(transactionsResponse.data.transactions);
+        const tradesResponse = await TradesAPI.getUserTrades(1, 5);
+        
+        // Combine and sort transactions with trades
+        const transactions = transactionsResponse.data.transactions || [];
+        const trades = (tradesResponse.data.trades || []).map(trade => ({
+          transaction_id: `trade-${trade.trade_id}`,
+          transaction_type: trade.trade_type === 'buy' ? 'stock_buy' : 'stock_sell',
+          amount: trade.total_amount,
+          currency_code: trade.currency_code,
+          created_at: trade.trade_date,
+          description: `${trade.trade_type === 'buy' ? 'Bought' : 'Sold'} ${trade.quantity} ${trade.symbol}`
+        }));
+        
+        // Combine both arrays and sort by created_at
+        const allTransactions = [...transactions, ...trades].sort((a, b) => 
+          new Date(b.created_at) - new Date(a.created_at)
+        ).slice(0, 5); // Take only the 5 most recent
+        
+        setRecentTransactions(allTransactions);
         
         setLoading(false);
       } catch (err) {
@@ -45,10 +63,52 @@ export default function DashboardPage() {
   }, [selectedCurrency]);
 
   // Prepare data for wallet distribution chart
-  const walletDistributionData = wallets.map(wallet => ({
-    name: wallet.currency_code,
-    value: parseFloat(wallet.balance)
-  }));
+  // Only show top 4 currencies and group the rest as "Other"
+  const prepareWalletDistributionData = () => {
+    if (!wallets || wallets.length === 0) return [];
+    
+    // Get master wallet currency
+    const masterWallet = wallets.find(wallet => wallet.is_master);
+    const masterCurrency = masterWallet?.currency_code || selectedCurrency;
+    
+    // Only show wallets with non-zero balance
+    const walletsWithBalance = wallets.filter(wallet => parseFloat(wallet.balance) > 0);
+    
+    // Sort wallets by balance (converted to master currency)
+    const sortedWallets = [...walletsWithBalance].sort((a, b) => {
+      const aBalance = parseFloat(a.balance);
+      const bBalance = parseFloat(b.balance);
+      return bBalance - aBalance;
+    });
+    
+    // Take top 4 wallets and group the rest as "Other"
+    const topWallets = sortedWallets.slice(0, 4);
+    const otherWallets = sortedWallets.slice(4);
+    
+    // Create chart data for top wallets
+    const data = topWallets.map(wallet => ({
+      name: wallet.currency_code,
+      value: parseFloat(wallet.balance),
+      label: `${wallet.currency_code}: ${formatCurrency(wallet.balance, wallet.currency_code)}`
+    }));
+    
+    // Add "Other" category if needed
+    if (otherWallets.length > 0) {
+      const otherValue = otherWallets.reduce((sum, wallet) => 
+        sum + parseFloat(wallet.balance), 0
+      );
+      
+      data.push({
+        name: 'Other',
+        value: otherValue,
+        label: `Other: ${formatCurrency(otherValue, masterCurrency)}`
+      });
+    }
+    
+    return data;
+  };
+  
+  const walletDistributionData = prepareWalletDistributionData();
 
   return (
     <DashboardLayout>
@@ -117,52 +177,61 @@ export default function DashboardPage() {
                   Allocation of funds across wallets
                 </CardDescription>
               </CardHeader>
-              <CardContent className="pl-2">
-                <div className="h-[200px]">
-                  {loading ? (
-                    <div className="flex h-full items-center justify-center">
-                      <p>Loading chart data...</p>
+              <CardContent>
+                {loading ? (
+                  <div className="flex h-full items-center justify-center">
+                    <p>Loading wallet data...</p>
+                  </div>
+                ) : wallets.length > 0 ? (
+                  <div className="space-y-4">
+                    {prepareWalletDistributionData().map((wallet, index) => (
+                      <div key={wallet.name} className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div 
+                            className="h-3 w-3 rounded-full" 
+                            style={{ 
+                              backgroundColor: [
+                                'hsl(215, 90%, 52%)', // Blue
+                                'hsl(150, 60%, 48%)', // Green
+                                'hsl(45, 95%, 58%)',  // Yellow
+                                'hsl(10, 85%, 57%)',  // Red
+                                'hsl(280, 60%, 65%)'  // Purple
+                              ][index % 5]
+                            }}
+                          />
+                          <span className="font-medium">{wallet.name}</span>
+                        </div>
+                        <div className="font-medium">
+                          {formatCurrency(wallet.value, wallet.name)}
+                        </div>
+                      </div>
+                    ))}
+                    
+                    <div className="mt-6 pt-4 border-t">
+                      <div className="flex items-center justify-between font-semibold">
+                        <span>Total Balance</span>
+                        <span>{formatCurrency(totalPortfolioValue, selectedCurrency)}</span>
+                      </div>
                     </div>
-                  ) : wallets.length > 0 ? (
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart
-                        data={walletDistributionData}
-                        margin={{
-                          top: 5,
-                          right: 10,
-                          left: 10,
-                          bottom: 20,
-                        }}
-                        barSize={40}
-                      >
-                        <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                        <XAxis 
-                          dataKey="name" 
-                          className="text-xs text-muted-foreground"
-                        />
-                        <YAxis className="text-xs text-muted-foreground" />
-                        <Tooltip 
-                          formatter={(value) => [`${formatCurrency(value, selectedCurrency)}`, 'Balance']}
-                          labelFormatter={(value) => `${value} Wallet`}
-                          contentStyle={{ 
-                            backgroundColor: 'hsl(var(--card))',
-                            borderColor: 'hsl(var(--border))',
-                            color: 'hsl(var(--card-foreground))'
+                    
+                    <div className="grid grid-cols-2 gap-2 mt-2">
+                      {wallets.map(wallet => (
+                        <div 
+                          key={wallet.wallet_id} 
+                          className={`h-1.5 rounded-full ${wallet.is_master ? 'bg-primary' : 'bg-muted'}`}
+                          style={{ 
+                            width: `${(parseFloat(wallet.balance) / totalPortfolioValue * 100)}%`,
+                            minWidth: '4px'
                           }}
                         />
-                        <Bar 
-                          dataKey="value" 
-                          fill="hsl(var(--muted-foreground))" 
-                          radius={[4, 4, 0, 0]}
-                        />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <div className="flex h-full items-center justify-center">
-                      <p className="text-muted-foreground">No wallet data available</p>
+                      ))}
                     </div>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <div className="flex h-full items-center justify-center">
+                    <p className="text-muted-foreground">No wallet data available</p>
+                  </div>
+                )}
               </CardContent>
             </Card>
             <Card className="col-span-3">
@@ -182,11 +251,11 @@ export default function DashboardPage() {
                     {recentTransactions.map((transaction) => (
                       <div key={transaction.transaction_id} className="flex items-center">
                         <div className={`mr-4 rounded-full p-2 ${
-                          transaction.transaction_type === 'deposit' || transaction.transaction_type === 'conversion_in'
+                          transaction.transaction_type === 'deposit' || transaction.transaction_type === 'conversion_in' || transaction.transaction_type === 'stock_sell'
                             ? 'bg-green-100 dark:bg-green-900'
                             : 'bg-red-100 dark:bg-red-900'
                         }`}>
-                          {transaction.transaction_type === 'deposit' || transaction.transaction_type === 'conversion_in' ? (
+                          {transaction.transaction_type === 'deposit' || transaction.transaction_type === 'conversion_in' || transaction.transaction_type === 'stock_sell' ? (
                             <ArrowUpIcon className="h-4 w-4 text-green-600 dark:text-green-400" />
                           ) : (
                             <ArrowDownIcon className="h-4 w-4 text-red-600 dark:text-red-400" />
@@ -194,19 +263,23 @@ export default function DashboardPage() {
                         </div>
                         <div className="flex-1 space-y-1">
                           <p className="text-sm font-medium leading-none">
-                            {transaction.transaction_type.charAt(0).toUpperCase() + 
-                             transaction.transaction_type.slice(1).replace('_', ' ')}
+                            {transaction.transaction_type === 'stock_buy' 
+                              ? 'Stock Purchase' 
+                              : transaction.transaction_type === 'stock_sell'
+                                ? 'Stock Sale'
+                                : transaction.transaction_type.charAt(0).toUpperCase() + 
+                                  transaction.transaction_type.slice(1).replace('_', ' ')}
                           </p>
                           <p className="text-xs text-muted-foreground">
-                            {new Date(transaction.created_at).toLocaleString()}
+                            {transaction.description || new Date(transaction.created_at).toLocaleString()}
                           </p>
                         </div>
                         <div className={`font-medium ${
-                          transaction.transaction_type === 'deposit' || transaction.transaction_type === 'conversion_in'
+                          transaction.transaction_type === 'deposit' || transaction.transaction_type === 'conversion_in' || transaction.transaction_type === 'stock_sell'
                             ? 'text-green-600 dark:text-green-400'
                             : 'text-red-600 dark:text-red-400'
                         }`}>
-                          {transaction.transaction_type === 'deposit' || transaction.transaction_type === 'conversion_in'
+                          {transaction.transaction_type === 'deposit' || transaction.transaction_type === 'conversion_in' || transaction.transaction_type === 'stock_sell'
                             ? '+'
                             : '-'
                           }

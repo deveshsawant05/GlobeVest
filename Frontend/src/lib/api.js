@@ -104,7 +104,8 @@ export const WalletAPI = {
   exchangeCurrency: (exchangeData) => api.post('/wallet/exchange', exchangeData),
   getTotalBalance: (currencyCode) => api.get(`/wallet/balance/total${currencyCode ? `?currency=${currencyCode}` : ''}`),
   getWalletById: (id) => api.get(`/wallets/${id}`),
-  transferFunds: (data) => api.post('/wallets/transfer', data)
+  transferFunds: (data) => api.post('/wallets/transfer', data),
+  getExchangeRates: () => api.get('/wallet/exchange-rates')
 };
 
 // Stocks API

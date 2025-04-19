@@ -192,7 +192,7 @@ export default function MarketsPage() {
 
         <div className="flex flex-col gap-4">
           <div className="flex flex-col sm:flex-row items-center gap-4">
-            <div className="relative flex-1 w-full max-w-lg">
+            <div className="relative flex-1 w-full">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
                 type="search"
@@ -202,14 +202,6 @@ export default function MarketsPage() {
                 onChange={(e) => setSearchQuery(e.target.value)}
               />
             </div>
-            <Button 
-              onClick={handleRefreshPrices} 
-              variant="outline"
-              className="w-full sm:w-auto"
-            >
-              <ArrowRightLeft className="mr-2 h-4 w-4" />
-              Refresh Prices
-            </Button>
           </div>
 
           <Tabs
@@ -286,7 +278,7 @@ export default function MarketsPage() {
                                     </div>
                                   </TableCell>
                                   <TableCell className="text-right">
-                                    <div className="hidden sm:block">
+                                    <div className="hidden sm:block" onClick={(e) => e.stopPropagation()}>
                                       <StockDetailDialog stock={stock} market={market} onTrade={() => goToTrading(stock.stock_id)} />
                                     </div>
                                     <div className="sm:hidden">
@@ -342,12 +334,24 @@ function StockDetailDialog({ stock, market, onTrade }) {
     return `${formatCurrency(stock.day_low, market.currency)} - ${formatCurrency(stock.day_high, market.currency)}`;
   };
   
+  const handleButtonClick = (e) => {
+    e.stopPropagation();
+    setIsOpen(true);
+  };
+  
   return (
-    <Dialog open={isOpen} onOpenChange={setIsOpen}>
+    <Dialog open={isOpen} onOpenChange={(open) => {
+      // When closing, ensure we're not propagating any events
+      if (!open) {
+        setTimeout(() => setIsOpen(false), 0);
+      } else {
+        setIsOpen(open);
+      }
+    }}>
       <DialogTrigger asChild>
-        <Button variant="outline" size="sm">View</Button>
+        <Button variant="outline" size="sm" onClick={handleButtonClick}>View</Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[500px]">
+      <DialogContent className="sm:max-w-[500px]" onClick={(e) => e.stopPropagation()}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-xl">
             {stock.symbol} - {stock.name}
@@ -366,7 +370,12 @@ function StockDetailDialog({ stock, market, onTrade }) {
                 {formatCurrency(stock.change_value || 0, market.currency)} ({formatPercentage(stock.change_percentage)})
               </p>
             </div>
-            <Button onClick={() => { onTrade(); setIsOpen(false); }}>
+            <Button onClick={(e) => { 
+              e.stopPropagation(); 
+              setIsOpen(false); 
+              // Use setTimeout to ensure dialog is closed before navigation
+              setTimeout(() => onTrade(), 100); 
+            }}>
               Trade Now
             </Button>
           </div>

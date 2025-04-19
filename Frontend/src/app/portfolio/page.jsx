@@ -139,25 +139,32 @@ export default function PortfolioPage() {
   
   // Fetch initial data for trades and wallets (not stocks - those come from WebSocket)
   const fetchInitialData = async () => {
-      try {
-        setIsLoading(true);
-      
+    try {
+      setIsLoading(true);
+    
       // Fetch user's portfolio of stocks - we'll use this for stock IDs,
       // but we'll get the current prices from WebSocket
-        const portfolioResponse = await StocksAPI.getUserPortfolio();
-        
-        // Fetch user's wallets
-        const walletsResponse = await WalletAPI.getUserWallets();
-        
+      const portfolioResponse = await StocksAPI.getUserPortfolio();
+      
+      // Fetch user's wallets
+      const walletsResponse = await WalletAPI.getUserWallets();
+      
+      // Fetch exchange rates
+      const ratesResponse = await WalletAPI.getExchangeRates();
+      
       // Fetch trades for additional stock info
       const tradesResponse = await TradesAPI.getUserTrades(1, 1000);
       
       const walletData = walletsResponse.data || [];
       let stocksData = portfolioResponse.data?.stocks || [];
       const tradesData = tradesResponse.data?.trades || [];
+      const exchangeRates = ratesResponse.data || {};
       
       // Store trade data for real-time processing
       tradesRef.current = tradesData;
+      
+      // Set wallet data
+      setWallets(walletData);
       
       // Set default master wallet currency
       const masterWallet = walletData.find(w => w.is_master);
@@ -243,35 +250,75 @@ export default function PortfolioPage() {
         });
       }
       
-      // Store stock data and initialize portfolio
+      // Store stock data and set up WebSocket subscriptions
       stocksData.forEach(stock => {
         stocksRef.current.set(stock.stock_id, {
           ...stock,
           symbol: stock.symbol,
-          last_price: parseFloat(stock.current_price)
+          name: stock.name,
+          market: stock.market,
+          currency_code: stock.currency_code
         });
         
-        // Subscribe to real-time updates for this stock
+        // Subscribe to this stock if we have a socket connection
         if (socketRef.current) {
           socketRef.current.emit('subscribeToStock', stock.stock_id);
         }
       });
       
-      // Store wallet data
-      setWallets(walletData);
+      // Process portfolio data with the stock information, trades, and exchange rates
+      processPortfolioData(tradesData, exchangeRates);
       
-      // Process portfolio with the data we have, even without WebSocket data
-      processPortfolioData(tradesData);
-      
-    } catch (err) {
-      console.error("Error fetching portfolio data:", err);
-      setError("Failed to load portfolio data. Please try again later.");
       setIsLoading(false);
+    } catch (error) {
+      console.error("Error fetching initial data:", error);
+      setIsLoading(false);
+      setError("Failed to load portfolio data");
     }
   };
   
-  // Process portfolio data with current stock prices from WebSocket
-  const processPortfolioData = (tradesData = null) => {
+  // Function to convert amount from one currency to another using exchange rates
+  const convertCurrency = (amount, fromCurrency, toCurrency, rates) => {
+    if (fromCurrency === toCurrency) return amount;
+    
+    // Check for direct conversion rate
+    const directRate = rates[`${fromCurrency}_${toCurrency}`];
+    if (directRate) {
+      return amount * directRate;
+    }
+    
+    // Check for inverse rate
+    const inverseRate = rates[`${toCurrency}_${fromCurrency}`];
+    if (inverseRate) {
+      return amount / inverseRate;
+    }
+    
+    // Try using USD as an intermediate currency
+    const toUSD = rates[`${fromCurrency}_USD`];
+    const fromUSD = rates[`USD_${toCurrency}`];
+    
+    if (toUSD && fromUSD) {
+      return amount * toUSD * fromUSD;
+    }
+    
+    // Fallback to hardcoded rates if all else fails
+    const fallbackRates = {
+      USD: 1.0,
+      EUR: 1.1,
+      GBP: 1.3,
+      JPY: 0.0091,
+      INR: 0.012,
+      AUD: 0.65,
+      CAD: 0.72
+    };
+    
+    // Convert to USD first, then to target currency
+    const toUSDFallback = fromCurrency === 'USD' ? amount : amount / fallbackRates[fromCurrency];
+    return toUSDFallback * fallbackRates[toCurrency];
+  };
+
+  // Process portfolio data to calculate totals, holdings, etc.
+  const processPortfolioData = (tradesData = null, exchangeRates = null) => {
     try {
       // Get trades data - either from parameter or from reference
       const trades = tradesData || tradesRef.current || [];
@@ -323,24 +370,6 @@ export default function PortfolioPage() {
           }
         }
       });
-      
-      // Currency conversion rates (simplified - in a real app, these would come from an API)
-      // For demo, assume we have some fixed conversion rates to master currency
-      const conversionRates = {
-        USD: 1.0,
-        EUR: 1.1,
-        GBP: 1.3,
-        JPY: 0.0091,
-        INR: 0.012,
-        AUD: 0.65,
-        CAD: 0.72,
-        // Add more currencies as needed
-      };
-      
-      // Ensure we have the master currency in our rates
-      if (!conversionRates[masterCurrency]) {
-        conversionRates[masterCurrency] = 1.0;
-      }
       
       // Track unique stock symbols to calculate assets count correctly
       const uniqueStockSymbols = new Set();
@@ -485,10 +514,11 @@ export default function PortfolioPage() {
           }
           
           // Convert to master currency for chart
-          const conversionRate = (conversionRates[holding.currency_code] || 1.0) / 
-            (conversionRates[masterCurrency] || 1.0);
+          const convertedValue = exchangeRates ? 
+            convertCurrency(holding.currentValue, holding.currency_code, masterCurrency, exchangeRates) : 
+            holding.currentValue; 
           
-          marketGroups[holding.market] += holding.currentValue * conversionRate;
+          marketGroups[holding.market] += convertedValue;
         });
       });
       
@@ -497,46 +527,53 @@ export default function PortfolioPage() {
         value: marketGroups[market]
       }));
       
-      // Calculate overall totals converted to master currency
+      // Calculate totals in master currency
       let totalInvestment = 0;
       let totalCurrentValue = 0;
       let totalProfitLoss = 0;
       
       Object.keys(currencyTotals).forEach(currency => {
-        // Apply conversion rate to convert to master currency
-        const conversionRate = (conversionRates[currency] || 1.0) / 
-          (conversionRates[masterCurrency] || 1.0);
+        // Convert each currency's totals to master currency
+        const investmentInMaster = exchangeRates ? 
+          convertCurrency(currencyTotals[currency].totalInvestment, currency, masterCurrency, exchangeRates) : 
+          currencyTotals[currency].totalInvestment;
         
-        totalInvestment += currencyTotals[currency].totalInvestment * conversionRate;
-        totalCurrentValue += currencyTotals[currency].totalCurrentValue * conversionRate;
-        totalProfitLoss += currencyTotals[currency].profitLoss * conversionRate;
+        const currentValueInMaster = exchangeRates ? 
+          convertCurrency(currencyTotals[currency].totalCurrentValue, currency, masterCurrency, exchangeRates) : 
+          currencyTotals[currency].totalCurrentValue;
+        
+        const profitLossInMaster = currentValueInMaster - investmentInMaster;
+        
+        // Add to master totals
+        totalInvestment += investmentInMaster;
+        totalCurrentValue += currentValueInMaster;
+        totalProfitLoss += profitLossInMaster;
       });
       
-      const totalProfitLossPercentage = totalInvestment > 0 
-        ? (totalProfitLoss / totalInvestment) * 100 
-        : 0;
+      // Calculate overall profit/loss percentage
+      const profitLossPercentage = totalInvestment > 0 ? 
+        (totalProfitLoss / totalInvestment) * 100 : 0;
       
-      // Update state with real-time portfolio data
+      // Update portfolio state with calculated values
       setPortfolio({
         stocks: stocksData,
         totalInvestment,
         totalCurrentValue,
         profitLoss: totalProfitLoss,
-        profitLossPercentage: totalProfitLossPercentage,
+        profitLossPercentage,
+        holdingsByCurrency: holdingsArrayByCurrency,
+        currencyTotals,
+        stocksByWallet: tradeEntries,
         marketDistribution,
         currencyBreakdown,
-        assetsCount: uniqueStockSymbols.size, // Use the count of unique symbols
-        currencyTotals, // Add currency totals for the new section
-        holdingsByCurrency: holdingsArrayByCurrency // Add holdings by currency for the new section
+        assetsCount: uniqueStockSymbols.size
       });
       
-      // Store trade entries instead of aggregated stock data
+      // Store trade data in state for rendering
       setStocksByWallet(tradeEntries);
-      setIsLoading(false);
-    } catch (err) {
-      console.error("Error processing portfolio data:", err);
-      setError("Error processing portfolio data with real-time prices.");
-      setIsLoading(false);
+    } catch (error) {
+      console.error("Error processing portfolio data:", error);
+      setError("Error calculating portfolio metrics");
     }
   };
   

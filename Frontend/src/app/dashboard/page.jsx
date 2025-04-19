@@ -6,7 +6,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { formatCurrency } from "@/lib/utils";
 import { ArrowDownIcon, ArrowUpIcon, DollarSign, Wallet } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
-import { WalletAPI, TransactionsAPI, TradesAPI } from "@/lib/api";
+import { WalletAPI, TransactionsAPI, TradesAPI, StocksAPI } from "@/lib/api";
+import { useSocket } from "@/hooks/use-socket";
 
 export default function DashboardPage() {
   const [selectedCurrency, setSelectedCurrency] = useState("USD");
@@ -15,52 +16,204 @@ export default function DashboardPage() {
   const [recentTransactions, setRecentTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [exchangeRates, setExchangeRates] = useState({});
+  const [stockHoldings, setStockHoldings] = useState([]);
+  const socket = useSocket(process.env.NEXT_PUBLIC_STOCK_MARKET_URL);
 
   // Fetch data when component mounts or currency changes
   useEffect(() => {
     async function fetchData() {
       try {
         setLoading(true);
-        // Fetch wallets data
-        const walletsResponse = await WalletAPI.getUserWallets();
-        setWallets(walletsResponse.data);
         
-        // Fetch total portfolio value with correct currency conversion
-        const portfolioResponse = await WalletAPI.getTotalBalance(selectedCurrency);
-        setTotalPortfolioValue(portfolioResponse.data.totalBalance);
+        // Fetch exchange rates first
+        let ratesResponse;
+        try {
+          ratesResponse = await WalletAPI.getExchangeRates();
+          setExchangeRates(ratesResponse.data);
+        } catch (error) {
+          console.error("Error fetching exchange rates:", error);
+          // Fallback exchange rates if API fails
+          setExchangeRates({
+            'USD_EUR': 0.92, 'USD_GBP': 0.79, 'USD_JPY': 150.44, 'USD_INR': 83.12,
+            'EUR_USD': 1.09, 'EUR_GBP': 0.86, 'EUR_JPY': 163.57, 'EUR_INR': 90.28,
+            'GBP_USD': 1.27, 'GBP_EUR': 1.17, 'GBP_JPY': 191.13, 'GBP_INR': 105.66,
+            'JPY_USD': 0.0067, 'JPY_EUR': 0.0061, 'JPY_GBP': 0.0052, 'JPY_INR': 0.55,
+            'INR_USD': 0.012, 'INR_EUR': 0.011, 'INR_GBP': 0.0095, 'INR_JPY': 1.81
+          });
+        }
+        
+        // Fetch wallets data
+        let walletsData = [];
+        try {
+          const walletsResponse = await WalletAPI.getUserWallets();
+          walletsData = walletsResponse.data || [];
+          setWallets(walletsData);
+        } catch (error) {
+          console.error("Error fetching wallets:", error);
+          setWallets([]);
+        }
+        
+        // Fetch stock holdings for portfolio value calculation
+        let stocksData = [];
+        try {
+          const portfolioResponse = await StocksAPI.getUserPortfolio();
+          stocksData = portfolioResponse.data.stocks || [];
+          setStockHoldings(stocksData);
+        } catch (error) {
+          console.error("Error fetching portfolio:", error);
+          setStockHoldings([]);
+        }
+        
+        // Calculate total portfolio value including stocks
+        const rates = ratesResponse?.data || exchangeRates;
+        calculateTotalPortfolioValue(
+          walletsData, 
+          stocksData, 
+          rates,
+          selectedCurrency
+        );
         
         // Fetch recent transactions and trades
-        const transactionsResponse = await TransactionsAPI.getUserTransactions(1, 5);
-        const tradesResponse = await TradesAPI.getUserTrades(1, 5);
-        
-        // Combine and sort transactions with trades
-        const transactions = transactionsResponse.data.transactions || [];
-        const trades = (tradesResponse.data.trades || []).map(trade => ({
-          transaction_id: `trade-${trade.trade_id}`,
-          transaction_type: trade.trade_type === 'buy' ? 'stock_buy' : 'stock_sell',
-          amount: trade.total_amount,
-          currency_code: trade.currency_code,
-          created_at: trade.trade_date,
-          description: `${trade.trade_type === 'buy' ? 'Bought' : 'Sold'} ${trade.quantity} ${trade.symbol}`
-        }));
-        
-        // Combine both arrays and sort by created_at
-        const allTransactions = [...transactions, ...trades].sort((a, b) => 
-          new Date(b.created_at) - new Date(a.created_at)
-        ).slice(0, 5); // Take only the 5 most recent
-        
-        setRecentTransactions(allTransactions);
-        
-        setLoading(false);
+        try {
+          const transactionsResponse = await TransactionsAPI.getUserTransactions(1, 5);
+          const tradesResponse = await TradesAPI.getUserTrades(1, 5);
+          
+          // Combine and sort transactions with trades
+          const transactions = transactionsResponse.data.transactions || [];
+          const trades = (tradesResponse.data.trades || []).map(trade => ({
+            transaction_id: `trade-${trade.trade_id}`,
+            transaction_type: trade.trade_type === 'buy' ? 'stock_buy' : 'stock_sell',
+            amount: trade.total_amount,
+            currency_code: trade.currency_code,
+            created_at: trade.trade_date,
+            description: `${trade.trade_type === 'buy' ? 'Bought' : 'Sold'} ${trade.quantity} ${trade.symbol}`
+          }));
+          
+          // Combine both arrays and sort by created_at
+          const allTransactions = [...transactions, ...trades].sort((a, b) => 
+            new Date(b.created_at) - new Date(a.created_at)
+          ).slice(0, 5); // Take only the 5 most recent
+          
+          setRecentTransactions(allTransactions);
+        } catch (error) {
+          console.error("Error fetching transactions or trades:", error);
+          setRecentTransactions([]);
+        }
       } catch (err) {
         console.error("Error fetching dashboard data:", err);
         setError("Failed to load dashboard data");
+      } finally {
         setLoading(false);
       }
     }
     
     fetchData();
   }, [selectedCurrency]);
+
+  // Effect to update stock prices via WebSocket
+  useEffect(() => {
+    if (!socket || stockHoldings.length === 0) return;
+
+    const handleStockUpdate = (updatedStock) => {
+      setStockHoldings(current => {
+        const updated = current.map(stock => 
+          stock.stock_id === updatedStock.stock_id 
+            ? { ...stock, last_price: updatedStock.last_price }
+            : stock
+        );
+        
+        // Recalculate total portfolio value with updated stock prices
+        calculateTotalPortfolioValue(wallets, updated, exchangeRates, selectedCurrency);
+        return updated;
+      });
+    };
+
+    // Subscribe to stock updates for stocks in portfolio
+    stockHoldings.forEach(stock => {
+      socket.emit('subscribeToStock', stock.stock_id);
+    });
+
+    socket.on('stockUpdate', handleStockUpdate);
+    socket.on('stocksUpdate', (stocks) => {
+      stocks.forEach(stock => {
+        if (stockHoldings.some(s => s.stock_id === stock.stock_id)) {
+          handleStockUpdate(stock);
+        }
+      });
+    });
+
+    return () => {
+      // Unsubscribe on component unmount
+      stockHoldings.forEach(stock => {
+        socket.emit('unsubscribeFromStock', stock.stock_id);
+      });
+      socket.off('stockUpdate');
+      socket.off('stocksUpdate');
+    };
+  }, [socket, stockHoldings, wallets, exchangeRates, selectedCurrency]);
+
+  // Function to calculate total portfolio value including stocks
+  const calculateTotalPortfolioValue = (wallets, stocks, rates, targetCurrency) => {
+    if (!wallets.length || !rates || !Object.keys(rates).length) return;
+
+    // Calculate wallet values in target currency
+    const walletsValue = wallets.reduce((total, wallet) => {
+      let convertedValue = parseFloat(wallet.balance);
+      
+      // Convert to target currency if needed
+      if (wallet.currency_code !== targetCurrency) {
+        const directRate = rates[`${wallet.currency_code}_${targetCurrency}`];
+        const inverseRate = rates[`${targetCurrency}_${wallet.currency_code}`];
+        
+        if (directRate) {
+          convertedValue *= directRate;
+        } else if (inverseRate) {
+          convertedValue /= inverseRate;
+        } else {
+          // Fallback to USD as intermediate if direct conversion not available
+          const toUSD = rates[`${wallet.currency_code}_USD`] || (1 / rates[`USD_${wallet.currency_code}`]);
+          const fromUSD = rates[`USD_${targetCurrency}`] || (1 / rates[`${targetCurrency}_USD`]);
+          
+          if (toUSD && fromUSD) {
+            convertedValue = convertedValue * toUSD * fromUSD;
+          }
+        }
+      }
+      
+      return total + convertedValue;
+    }, 0);
+
+    // Calculate stocks value in target currency
+    const stocksValue = stocks.reduce((total, stock) => {
+      let value = parseFloat(stock.quantity) * parseFloat(stock.last_price);
+      
+      // Convert to target currency if needed
+      if (stock.currency_code !== targetCurrency) {
+        const directRate = rates[`${stock.currency_code}_${targetCurrency}`];
+        const inverseRate = rates[`${targetCurrency}_${stock.currency_code}`];
+        
+        if (directRate) {
+          value *= directRate;
+        } else if (inverseRate) {
+          value /= inverseRate;
+        } else {
+          // Fallback to USD as intermediate
+          const toUSD = rates[`${stock.currency_code}_USD`] || (1 / rates[`USD_${stock.currency_code}`]);
+          const fromUSD = rates[`USD_${targetCurrency}`] || (1 / rates[`${targetCurrency}_USD`]);
+          
+          if (toUSD && fromUSD) {
+            value = value * toUSD * fromUSD;
+          }
+        }
+      }
+      
+      return total + value;
+    }, 0);
+
+    // Set total portfolio value
+    setTotalPortfolioValue(walletsValue + stocksValue);
+  };
 
   // Prepare data for wallet distribution chart
   // Only show top 4 currencies and group the rest as "Other"
@@ -74,12 +227,31 @@ export default function DashboardPage() {
     // Only show wallets with non-zero balance
     const walletsWithBalance = wallets.filter(wallet => parseFloat(wallet.balance) > 0);
     
-    // Sort wallets by balance (converted to master currency)
-    const sortedWallets = [...walletsWithBalance].sort((a, b) => {
-      const aBalance = parseFloat(a.balance);
-      const bBalance = parseFloat(b.balance);
-      return bBalance - aBalance;
+    // Convert all balances to selected currency
+    const walletsWithConvertedBalance = walletsWithBalance.map(wallet => {
+      let convertedBalance = parseFloat(wallet.balance);
+      
+      if (wallet.currency_code !== selectedCurrency && exchangeRates) {
+        const directRate = exchangeRates[`${wallet.currency_code}_${selectedCurrency}`];
+        const inverseRate = exchangeRates[`${selectedCurrency}_${wallet.currency_code}`];
+        
+        if (directRate) {
+          convertedBalance *= directRate;
+        } else if (inverseRate) {
+          convertedBalance /= inverseRate;
+        }
+      }
+      
+      return {
+        ...wallet,
+        convertedBalance
+      };
     });
+    
+    // Sort wallets by converted balance
+    const sortedWallets = [...walletsWithConvertedBalance].sort((a, b) => 
+      b.convertedBalance - a.convertedBalance
+    );
     
     // Take top 4 wallets and group the rest as "Other"
     const topWallets = sortedWallets.slice(0, 4);
@@ -89,19 +261,24 @@ export default function DashboardPage() {
     const data = topWallets.map(wallet => ({
       name: wallet.currency_code,
       value: parseFloat(wallet.balance),
+      convertedValue: wallet.convertedBalance,
       label: `${wallet.currency_code}: ${formatCurrency(wallet.balance, wallet.currency_code)}`
     }));
     
     // Add "Other" category if needed
     if (otherWallets.length > 0) {
-      const otherValue = otherWallets.reduce((sum, wallet) => 
-        sum + parseFloat(wallet.balance), 0
+      const otherValue = otherWallets.reduce(
+        (sum, wallet) => sum + parseFloat(wallet.balance), 0
+      );
+      const otherConvertedValue = otherWallets.reduce(
+        (sum, wallet) => sum + wallet.convertedBalance, 0
       );
       
       data.push({
         name: 'Other',
         value: otherValue,
-        label: `Other: ${formatCurrency(otherValue, masterCurrency)}`
+        convertedValue: otherConvertedValue,
+        label: `Other: ${formatCurrency(otherConvertedValue, selectedCurrency)}`
       });
     }
     
@@ -146,7 +323,7 @@ export default function DashboardPage() {
                 </div>
                 {!loading && (
                   <p className="text-xs text-muted-foreground">
-                    Across {wallets.length} wallet{wallets.length !== 1 ? 's' : ''}
+                    Across {wallets.length} wallet{wallets.length !== 1 ? 's' : ''} and {stockHoldings.length} stock{stockHoldings.length !== 1 ? 's' : ''}
                   </p>
                 )}
               </CardContent>
@@ -202,7 +379,7 @@ export default function DashboardPage() {
                           <span className="font-medium">{wallet.name}</span>
                         </div>
                         <div className="font-medium">
-                          {formatCurrency(wallet.value, wallet.name)}
+                          {formatCurrency(wallet.value, wallet.name !== 'Other' ? wallet.name : selectedCurrency)}
                         </div>
                       </div>
                     ))}

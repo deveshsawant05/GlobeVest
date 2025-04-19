@@ -334,39 +334,44 @@ const exchangeCurrency = async (req, res) => {
       // Create destination wallet
       const newWalletResult = await client.query(
         walletQueries.CREATE_WALLET,
-        [userId, toCurrency, 0]
+        [userId, toCurrency, 0, false]
       );
       toWalletId = newWalletResult.rows[0].wallet_id;
     } else {
       toWalletId = toWalletResult.rows[0].wallet_id;
     }
     
-    // Get exchange rate
-    // In a real app, you would use a forex API. For demo purposes, we'll use a mock API
+    // Get exchange rate from database
     let exchangeRate;
-    try {
-      // For demonstration - in a real app you would use a service like:
-      // const response = await axios.get(`https://api.exchangerate-api.com/v4/latest/${fromCurrency}`);
-      // exchangeRate = response.data.rates[toCurrency];
+    const exchangeRateResult = await client.query(walletQueries.GET_EXCHANGE_RATE, [fromCurrency, toCurrency]);
+    
+    if (exchangeRateResult.rows.length > 0) {
+      // Direct rate available
+      exchangeRate = parseFloat(exchangeRateResult.rows[0].rate);
+      logger.debug(`Direct exchange rate found: 1 ${fromCurrency} = ${exchangeRate} ${toCurrency}`);
+    } else {
+      // Try reverse rate
+      const reverseRateResult = await client.query(walletQueries.GET_EXCHANGE_RATE, [toCurrency, fromCurrency]);
       
-      // Mock exchange rates for demo
-      const mockRates = {
-        'USD': { 'EUR': 0.92, 'GBP': 0.79, 'JPY': 150.44, 'INR': 83.12 },
-        'EUR': { 'USD': 1.09, 'GBP': 0.86, 'JPY': 163.57, 'INR': 90.28 },
-        'GBP': { 'USD': 1.27, 'EUR': 1.17, 'JPY': 191.13, 'INR': 105.66 },
-        'JPY': { 'USD': 0.0067, 'EUR': 0.0061, 'GBP': 0.0052, 'INR': 0.55 },
-        'INR': { 'USD': 0.012, 'EUR': 0.011, 'GBP': 0.0095, 'JPY': 1.81 }
-      };
-      
-      exchangeRate = mockRates[fromCurrency]?.[toCurrency];
-      if (!exchangeRate) {
-        // Fallback rate if currency pair not in mock data
-        exchangeRate = 1.0;
+      if (reverseRateResult.rows.length > 0) {
+        // Inverse of reverse rate
+        exchangeRate = 1 / parseFloat(reverseRateResult.rows[0].rate);
+        logger.debug(`Using inverse exchange rate: 1 ${fromCurrency} = ${exchangeRate} ${toCurrency}`);
+      } else {
+        // Try triangulation through USD as a base currency
+        const fromToUsdResult = await client.query(walletQueries.GET_EXCHANGE_RATE, [fromCurrency, 'USD']);
+        const usdToTargetResult = await client.query(walletQueries.GET_EXCHANGE_RATE, ['USD', toCurrency]);
+        
+        if (fromToUsdResult.rows.length > 0 && usdToTargetResult.rows.length > 0) {
+          const fromToUsd = parseFloat(fromToUsdResult.rows[0].rate);
+          const usdToTarget = parseFloat(usdToTargetResult.rows[0].rate);
+          exchangeRate = fromToUsd * usdToTarget;
+          logger.debug(`Using triangulated exchange rate via USD: 1 ${fromCurrency} = ${exchangeRate} ${toCurrency}`);
+        } else {
+          // Fallback rate if no exchange rate found
+          throw new Error(`No exchange rate found for ${fromCurrency} to ${toCurrency}`);
+        }
       }
-      
-      logger.debug(`Exchange rate: 1 ${fromCurrency} = ${exchangeRate} ${toCurrency}`);
-    } catch (error) {
-      throw new Error(`Could not get exchange rate: ${error.message}`);
     }
     
     const convertedAmount = parseFloat(amount) * exchangeRate;
@@ -445,6 +450,28 @@ const getTotalBalance = async (req, res) => {
   }
 };
 
+// Get exchange rates
+const getExchangeRates = async (req, res) => {
+  try {
+    logger.info('Fetching exchange rates from database');
+    
+    // Fetch all exchange rates from the database
+    const exchangeRatesResult = await pool.query(walletQueries.GET_ALL_EXCHANGE_RATES);
+    
+    // Convert to flat format expected by frontend: USD_EUR, EUR_USD, etc.
+    const flatRates = {};
+    
+    exchangeRatesResult.rows.forEach(rate => {
+      flatRates[`${rate.from_currency}_${rate.to_currency}`] = parseFloat(rate.rate);
+    });
+    
+    res.status(200).json(flatRates);
+  } catch (error) {
+    logger.error(`Error fetching exchange rates: ${error.message}`);
+    res.status(500).json({ message: 'Failed to get exchange rates' });
+  }
+};
+
 module.exports = {
   getUserWallets,
   getMasterWallet,
@@ -453,5 +480,6 @@ module.exports = {
   depositFunds,
   withdrawFunds,
   exchangeCurrency,
-  getTotalBalance
+  getTotalBalance,
+  getExchangeRates
 };

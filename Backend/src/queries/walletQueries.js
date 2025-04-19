@@ -78,6 +78,33 @@ const walletQueries = {
         SELECT wallet_id, balance, is_master
         FROM wallets
         WHERE user_id = $1 AND currency_code = $2
+    `,
+    
+    // Get exchange rate between two currencies
+    GET_EXCHANGE_RATE: `
+        SELECT rate
+        FROM exchange_rates
+        WHERE from_currency = $1 AND to_currency = $2
+    `,
+
+    // Get all exchange rates
+    GET_ALL_EXCHANGE_RATES: `
+        SELECT from_currency, to_currency, rate
+        FROM exchange_rates
+    `,
+
+    // Get wallet by ID
+    GET_WALLET_BY_ID: `
+        SELECT wallet_id, user_id, currency_code, balance, is_master
+        FROM wallets
+        WHERE wallet_id = $1
+    `,
+
+    // Check wallet balance
+    CHECK_WALLET_BALANCE: `
+        SELECT balance
+        FROM wallets
+        WHERE user_id = $1 AND currency_code = $2
     `
 };
 

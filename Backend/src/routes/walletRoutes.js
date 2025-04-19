@@ -30,4 +30,7 @@ router.post('/exchange', walletController.exchangeCurrency);
 // Get total balance
 router.get('/balance/total', walletController.getTotalBalance);
 
+// Get exchange rates
+router.get('/exchange-rates', walletController.getExchangeRates);
+
 module.exports = router;

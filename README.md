@@ -133,18 +133,6 @@ NEXT_PUBLIC_API_URL=http://localhost:3000/api
 
 ---
 
-## 📌 Roadmap
-
-* [x] Basic wallet + forex functionality
-* [x] Auth system with access/refresh tokens
-* [x] Transaction tracking
-* [ ] Admin dashboard
-* [ ] Real-time forex charting
-* [ ] Multi-language & localization support
-* [ ] Investment recommendation engine (AI)
-
----
-
 ## 🤝 Contributing
 
 We welcome contributions! Please fork the repo and open a pull request. Ensure your code follows our conventions and is well-documented.
@@ -154,19 +142,5 @@ We welcome contributions! Please fork the repo and open a pull request. Ensure y
 ## 📄 License
 
 This project is licensed under the MIT License.
-
----
-
-## ✨ Acknowledgements
-
-* [Render](https://render.com) for seamless CI/CD and database hosting
-* [bol.new](https://bol.new) for rapid UI prototyping
-* [ExchangeRate-API](https://www.exchangerate-api.com/) for forex data
-
----
-
-## 📬 Contact
-
-For support or questions, reach out at **[support@globevest.app](mailto:support@globevest.app)**
 
 ```
